@@ -25,6 +25,7 @@ curl -fsSL https://claude.ai/install.sh | bash      # Claude Code 설치 (ARM64 
 git clone https://github.com/N01N9/FitCheck.git && cd FitCheck
 git checkout claude/clever-bardeen-tzem48
 groups | grep -q docker || echo "docker 그룹에 없음: sudo usermod -aG docker $USER 후 재로그인"
+claude                                               # 처음 한 번: 폴더 신뢰 창에서 승인 후 /exit
 tmux new -s fitcheck                                 # SSH가 끊겨도 세션 유지
 claude remote-control                                # 처음에는 로그인
 ```
