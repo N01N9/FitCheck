@@ -1,0 +1,12 @@
+# Phase 0 테스트 공통 의존성.
+# torch / torchvision 은 넣지 않는다: DGX Spark(ARM64 + CUDA 13)에서는
+# NVIDIA NGC PyTorch 컨테이너에 들어 있는 빌드를 그대로 써야 한다.
+numpy
+pillow
+# T01 BiRefNet (transformers trust_remote_code 가 요구하는 패키지)
+transformers
+timm
+kornia
+einops
+# 로컬 테스트
+pytest

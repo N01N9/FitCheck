@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# 테스트용 사진·결과물은 개인 데이터라 커밋하지 않는다
+backend/data/
+backend/results/
