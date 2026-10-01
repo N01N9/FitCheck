@@ -95,9 +95,25 @@ class Europeana:
             yield from data.get("items", [])
             cursor = data.get("nextCursor")
 
-    def download(self, url: str) -> bytes | None:
-        r = self._get(url, timeout=120)
-        return r.content if r is not None and r.status_code == 200 else None
+    def download(self, url: str, deadline: float = 90.0, max_bytes: int = 60 << 20) -> bytes | None:
+        """기관 서버가 아주 느리게 흘려보내면 요청 timeout 이 매번 새로 시작돼 한 파일에 계속 매달린다.
+        그래서 파일 하나에 전체 시간 상한(deadline)과 크기 상한을 두고, 넘으면 건너뛴다."""
+        import requests
+
+        start = time.monotonic()
+        try:
+            with self.s.get(url, timeout=30, stream=True) as r:
+                if r.status_code != 200:
+                    return None
+                buf = bytearray()
+                for chunk in r.iter_content(1 << 16):
+                    buf += chunk
+                    if time.monotonic() - start > deadline or len(buf) > max_bytes:
+                        return None
+                time.sleep(self.delay)
+                return bytes(buf)
+        except requests.RequestException:
+            return None
 
 
 def image_size(body: bytes) -> tuple[int, int] | None:
