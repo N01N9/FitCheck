@@ -40,3 +40,12 @@ def test_collect_keeps_public_domain_views_and_shrinks(tmp_path):
     # 다시 돌리면 받은 소장품은 건너뛴다
     again = collect(FakeMet(), tmp_path, max_objects=10, extra_views=1)
     assert again["images"] == 0
+
+
+def test_collect_uses_given_ids(tmp_path):
+    class NoSearch(FakeMet):
+        def object_ids(self):
+            raise AssertionError("ids 를 주면 검색하지 않는다")
+
+    stats = collect(NoSearch(), tmp_path, max_objects=10, extra_views=0, ids=[1])
+    assert stats["objects_kept"] == 1 and stats["images"] == 1

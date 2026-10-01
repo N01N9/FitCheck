@@ -7,7 +7,8 @@ The Met 은 퍼블릭 도메인 소장품 이미지를 CC0 로 공개하고 API 
   - 기록 형식은 collect_commons 의 sources.csv 와 같다. seed 에 objectName(예: Dress)을 남긴다.
 
 사용
-  python -m phase0.collect_met --out data/crawl/met
+  python -m phase0.collect_met --out data/crawl/met [--ids-file met_costume_pd_ids.txt]
+  (ids-file 은 The Met Open Access CSV 에서 Department=Costume Institute, Is Public Domain=True 인 Object ID)
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ COSTUME_DEPT = 8
 
 
 class Met:
-    def __init__(self, session=None, delay: float = 0.15):
+    def __init__(self, session=None, delay: float = 1.0):
         if session is None:
             import requests
 
@@ -45,8 +46,9 @@ class Met:
             except requests.RequestException:  # 연결 끊김·시간 초과 모두 재시도
                 time.sleep(2 ** attempt * 5)
                 continue
-            if r.status_code == 429 or r.status_code >= 500:
-                time.sleep(2 ** attempt * 5)
+            if r.status_code in (403, 429) or r.status_code >= 500:
+                # 빠르게 연달아 물으면 봇 차단(403)이 잠깐 걸린다. 기다렸다 다시 묻는다
+                time.sleep(min(30 * 2 ** attempt, 600))
                 continue
             time.sleep(self.delay)
             return r
@@ -79,7 +81,8 @@ def shrink(body: bytes, max_side: int) -> bytes:
     return buf.getvalue()
 
 
-def collect(api: Met, out: Path, max_objects: int, extra_views: int = 3, max_side: int = 1600) -> dict:
+def collect(api: Met, out: Path, max_objects: int, extra_views: int = 3, max_side: int = 1600,
+            ids: list[int] | None = None) -> dict:
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     csv_path = out / "sources.csv"
@@ -97,12 +100,14 @@ def collect(api: Met, out: Path, max_objects: int, extra_views: int = 3, max_sid
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         if new_file:
             writer.writeheader()
-        for oid in api.object_ids():
+        for oid in ids if ids is not None else api.object_ids():
             if stats["objects_kept"] >= max_objects:
                 break
             if str(oid) in done_objects:
                 continue
             stats["objects_seen"] += 1
+            if stats["objects_seen"] % 50 == 0:  # 대부분 건너뛰므로 진행 상황을 로그로 남긴다
+                print(json.dumps({"object_id": oid, **stats}, ensure_ascii=False), flush=True)
             o = api.obj(oid)
             if not o:
                 reject("fetch_failed")
@@ -155,8 +160,13 @@ def main(argv=None) -> None:
     p.add_argument("--out", required=True)
     p.add_argument("--max-objects", type=int, default=100000)
     p.add_argument("--extra-views", type=int, default=3)
+    p.add_argument("--ids-file", help="조회할 소장품 번호 목록(한 줄에 하나). Open Access CSV 에서 미리 뽑으면 "
+                                      "퍼블릭 도메인만 물어서 요청 수가 크게 준다")
     args = p.parse_args(argv)
-    print(json.dumps(collect(Met(), Path(args.out), args.max_objects, args.extra_views),
+    ids = None
+    if args.ids_file:
+        ids = [int(x) for x in Path(args.ids_file).read_text().split()]
+    print(json.dumps(collect(Met(), Path(args.out), args.max_objects, args.extra_views, ids=ids),
                      ensure_ascii=False, indent=2))
 
 
