@@ -52,3 +52,22 @@ def test_collect_shrinks_large_images(tmp_path):
     collect(Big(), tmp_path, max_files=1)
     name = next((tmp_path / "raw").iterdir())
     assert max(Image.open(name).size) == 1600
+
+
+def test_collect_skips_provider_whose_server_is_down(tmp_path):
+    cc0 = ["http://creativecommons.org/publicdomain/zero/1.0/"]
+
+    class Down:
+        downloads = 0
+
+        def search(self, query, theme):
+            for i in range(100):
+                yield {"id": f"/x/{i}", "rights": cc0, "edmIsShownBy": [f"u{i}"], "dataProvider": ["Dead Museum"]}
+
+        def download(self, url):
+            Down.downloads += 1
+            return None
+
+    stats = collect(Down(), tmp_path, max_files=10)
+    assert Down.downloads == 30
+    assert stats["reject"] == {"download_failed": 30, "provider_unavailable": 70}

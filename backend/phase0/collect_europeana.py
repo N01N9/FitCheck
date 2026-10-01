@@ -142,6 +142,14 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
     def reject(why):
         stats["reject"][why] = stats["reject"].get(why, 0) + 1
 
+    # 기관 서버가 통째로 죽어 있으면(예: 모든 요청에 500) 건마다 몇 초씩 버린다.
+    # 기관별로 실패가 30건 이상이고 성공률이 10% 미만이면 그 기관의 나머지는 시도하지 않는다.
+    tries: dict[str, list[int]] = {}
+
+    def provider_down(provider: str) -> bool:
+        ok, fail = tries.get(provider, [0, 0])
+        return fail >= 30 and ok < 0.1 * (ok + fail)
+
     with csv_path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         if new_file:
@@ -165,10 +173,17 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
             if not url:
                 reject("no_image")
                 continue
+            provider = "; ".join(item.get("dataProvider") or [])
+            if provider_down(provider):
+                reject("provider_unavailable")
+                continue
             body = api.download(url)
+            counts = tries.setdefault(provider, [0, 0])
             if not body:
+                counts[1] += 1
                 reject("download_failed")
                 continue
+            counts[0] += 1
             size = image_size(body)
             if size is None:
                 reject("not_image")
