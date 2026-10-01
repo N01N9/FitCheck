@@ -56,12 +56,16 @@ class Openverse:
         self.s = session
         self.delay = delay
 
-    def search(self, query: str, max_pages: int = 12) -> Iterator[dict]:
+    def search(self, query: str, source: str | None = None, max_pages: int = 12) -> Iterator[dict]:
         import requests
 
         for page in range(1, max_pages + 1):
             params = {"q": query, "license_type": "commercial,modification", "page_size": 20,
-                      "page": page, "excluded_source": "wikimedia", "mature": "false"}
+                      "page": page, "mature": "false"}
+            if source:  # 특정 출처(예: 박물관)만
+                params["source"] = source
+            else:  # Commons 는 collect_commons 가 따로 받는다
+                params["excluded_source"] = "wikimedia"
             data = None
             for attempt in range(8):
                 try:
@@ -112,8 +116,20 @@ def license_name(item: dict) -> str:
     return f"CC {lic.upper()} {ver}".strip()
 
 
+# 의상 소장품이 있고 상업 이용·수정이 허용되는 박물관 출처(Openverse 의 source 이름)
+MUSEUM_SOURCES = [
+    "clevelandmuseum", "smithsonian_cooper_hewitt_museum", "rijksmuseum", "brooklynmuseum",
+    "digitaltmuseum", "smk", "europeana",
+]
+MUSEUM_QUERIES = [
+    "dress", "gown", "costume", "coat", "jacket", "waistcoat", "shirt", "blouse", "skirt",
+    "trousers", "suit", "uniform", "kimono", "hanbok", "shoes", "boots", "hat", "bonnet",
+    "bag", "purse", "glove", "scarf", "shawl", "fashion", "garment", "clothing",
+]
+
+
 def collect(api: Openverse, out: Path, queries: list[str], max_files: int,
-            min_short_side: int = 500) -> dict:
+            min_short_side: int = 500, sources: list[str | None] | None = None) -> dict:
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     csv_path = out / "sources.csv"
@@ -133,8 +149,8 @@ def collect(api: Openverse, out: Path, queries: list[str], max_files: int,
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         if new_file:
             writer.writeheader()
-        for q in queries:
-            for item in api.search(q):
+        for q, src in [(q, src) for src in (sources or [None]) for q in queries]:
+            for item in api.search(q, src) if src else api.search(q):
                 if stats["kept"] >= max_files:
                     break
                 key = f"openverse:{item['id']}"
@@ -170,7 +186,7 @@ def collect(api: Openverse, out: Path, queries: list[str], max_files: int,
                     "width": w,
                     "height": h,
                     "sha1": sha1,
-                    "seed": f"openverse:{q}",
+                    "seed": f"openverse:{src + ':' if src else ''}{q}",
                 })
                 fh.flush()
                 stats["kept"] += 1
@@ -186,8 +202,13 @@ def main(argv=None) -> None:
     p.add_argument("--out", required=True)
     p.add_argument("--max-files", type=int, default=20000)
     p.add_argument("--query", action="append", help="검색어 (없으면 QUERIES 전부)")
+    p.add_argument("--museums", action="store_true", help="박물관 출처만, 의상 검색어로")
     args = p.parse_args(argv)
-    stats = collect(Openverse(), Path(args.out), args.query or QUERIES, args.max_files)
+    if args.museums:
+        stats = collect(Openverse(), Path(args.out), args.query or MUSEUM_QUERIES, args.max_files,
+                        sources=MUSEUM_SOURCES)
+    else:
+        stats = collect(Openverse(), Path(args.out), args.query or QUERIES, args.max_files)
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 
