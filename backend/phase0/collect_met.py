@@ -41,8 +41,8 @@ class Met:
 
         for attempt in range(6):
             try:
-                r = self.s.get(url, params=params or None, timeout=120)
-            except requests.ConnectionError:
+                r = self.s.get(url, params=params or None, timeout=60)
+            except requests.RequestException:  # 연결 끊김·시간 초과 모두 재시도
                 time.sleep(2 ** attempt * 5)
                 continue
             if r.status_code == 429 or r.status_code >= 500:

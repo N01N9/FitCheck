@@ -70,7 +70,7 @@ class Openverse:
             for attempt in range(8):
                 try:
                     r = self.s.get(API, params=params, timeout=60)
-                except requests.ConnectionError:
+                except requests.RequestException:  # 연결 끊김·시간 초과 모두 재시도
                     time.sleep(2 ** attempt * 5)
                     continue
                 if r.status_code == 429 or r.status_code >= 500:
@@ -95,7 +95,7 @@ class Openverse:
         for attempt in range(6):
             try:
                 r = self.s.get(url, timeout=120)
-            except requests.ConnectionError:
+            except requests.RequestException:  # 연결 끊김·시간 초과 모두 재시도
                 time.sleep(2 ** attempt * 5)
                 continue
             if r.status_code == 429 or r.status_code >= 500:

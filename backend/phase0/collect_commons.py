@@ -133,7 +133,7 @@ class Commons:
             # 제목 50개를 한 번에 물으면 GET 주소가 너무 길어져(414) POST 로 보낸다
             try:
                 r = self.s.post(API, data=params, timeout=60)
-            except requests.ConnectionError:
+            except requests.RequestException:  # 연결 끊김·시간 초과 모두 재시도
                 time.sleep(2 ** attempt * 5)
                 continue
             if r.status_code == 429 or r.status_code >= 500 or "maxlag" in r.text[:200]:
@@ -191,7 +191,7 @@ class Commons:
         for attempt in range(6):
             try:
                 r = self.s.get(url, timeout=120)
-            except requests.ConnectionError:
+            except requests.RequestException:  # 연결 끊김·시간 초과 모두 재시도
                 time.sleep(2 ** attempt * 5)
                 continue
             if r.status_code == 429 or r.status_code >= 500:
