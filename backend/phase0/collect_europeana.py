@@ -154,6 +154,9 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
                 continue
             seen_ids.add(key)
             stats["seen"] += 1
+            if stats["seen"] % 200 == 0:  # 건너뛰는 구간이 길 수 있어 진행 상황을 로그로 남긴다
+                provider = "; ".join(item.get("dataProvider") or [])
+                print(json.dumps({"provider": provider, **stats}, ensure_ascii=False), flush=True)
             rights = (item.get("rights") or [""])[0]
             if not rights_ok(rights):
                 reject("license")
