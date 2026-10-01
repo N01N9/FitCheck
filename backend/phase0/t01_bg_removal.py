@@ -2,8 +2,9 @@
 
 옷 사진 폴더를 받아 배경을 지운 PNG를 만들고, 속도·메모리·품질을 리포트로 남긴다.
 
-모델
+모델 래퍼는 `pipeline.garment.refine` 에 있다(파이프라인 3단계와 같은 코드를 쓴다).
   birefnet : BiRefNet (MIT). 실제 후보. GPU(DGX Spark)에서 돌린다.
+  ben2     : BEN2 Base (MIT). 비교 후보.
   border   : 가장자리 색을 배경으로 보고 지우는 고전 방식. 비교 기준선이자,
              GPU·모델 없이 파이프라인을 점검하는 용도.
 
@@ -24,6 +25,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from pipeline.garment.refine import BiRefNetRemover, BorderRemover, build_remover  # noqa: F401
 from phase0.common import (
     GpuPeak,
     Stopwatch,
@@ -41,54 +43,6 @@ TARGET_REVIEW_PASS = 0.90  # 눈 검수 합격률 90% 이상
 TARGET_IOU = 0.95  # 정답 마스크가 있을 때
 
 
-class BorderRemover:
-    """사진 가장자리의 평균색을 배경색으로 보고, 그 색과 먼 픽셀을 옷으로 본다."""
-
-    name = "border"
-
-    def __init__(self, threshold: float = 40.0):
-        self.threshold = threshold
-
-    def predict_mask(self, img: Image.Image) -> Image.Image:
-        a = np.asarray(img, dtype=np.float32)
-        edge = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]])
-        bg = np.median(edge, axis=0)
-        dist = np.linalg.norm(a - bg, axis=-1)
-        return Image.fromarray(((dist > self.threshold) * 255).astype(np.uint8))
-
-
-class BiRefNetRemover:
-    name = "birefnet"
-
-    def __init__(self, model_id: str, resolution: int = 1024):
-        import torch
-        from torchvision import transforms
-        from transformers import AutoModelForImageSegmentation
-
-        self.torch = torch
-        self.cuda = torch.cuda.is_available()
-        self.model = AutoModelForImageSegmentation.from_pretrained(model_id, trust_remote_code=True)
-        self.model.eval().to("cuda" if self.cuda else "cpu")
-        if self.cuda:
-            torch.set_float32_matmul_precision("high")
-            self.model.half()
-        self.transform = transforms.Compose(
-            [
-                transforms.Resize((resolution, resolution)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ]
-        )
-
-    def predict_mask(self, img: Image.Image) -> Image.Image:
-        x = self.transform(img).unsqueeze(0)
-        x = x.to("cuda").half() if self.cuda else x
-        with self.torch.inference_mode():
-            pred = self.model(x)[-1].sigmoid().float().cpu()[0, 0].numpy()
-        mask = Image.fromarray((pred * 255).astype(np.uint8))
-        return mask.resize(img.size, Image.BILINEAR)
-
-
 def iou_and_mae(pred: Image.Image, truth: Image.Image) -> tuple[float, float]:
     p = np.asarray(pred.convert("L"), dtype=np.float32) / 255
     t = np.asarray(truth.convert("L").resize(pred.size), dtype=np.float32) / 255
@@ -99,9 +53,12 @@ def iou_and_mae(pred: Image.Image, truth: Image.Image) -> tuple[float, float]:
 
 
 def build_model(args) -> object:
+    """파이프라인 3단계(refine)와 같은 모델 래퍼를 쓴다."""
     if args.model == "border":
-        return BorderRemover()
-    return BiRefNetRemover(args.model_id, args.resolution)
+        return build_remover("border")
+    if args.model == "ben2":
+        return build_remover("ben2")
+    return build_remover("birefnet", variant=args.model_id, resolution=args.resolution)
 
 
 def run(args) -> dict:
@@ -151,7 +108,7 @@ def run(args) -> dict:
     data = {
         "test": "T01 옷 누끼",
         "model": model.name,
-        "model_id": args.model_id if model.name == "birefnet" else None,
+        "model_id": getattr(model, "model_id", None),
         "environment": environment(),
         "load_seconds": round(load.seconds, 2),
         "images": len(images),
@@ -190,7 +147,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description="T01 옷 누끼 테스트")
     p.add_argument("--images", required=True, help="옷 사진 폴더")
     p.add_argument("--out", required=True, help="결과 폴더")
-    p.add_argument("--model", choices=["birefnet", "border"], default="birefnet")
+    p.add_argument("--model", choices=["birefnet", "ben2", "border"], default="birefnet")
     p.add_argument("--model-id", default="ZhengPeng7/BiRefNet")
     p.add_argument("--resolution", type=int, default=1024)
     p.add_argument("--masks", help="정답 마스크 폴더(선택)")
