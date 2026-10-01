@@ -32,6 +32,14 @@ QUERIES = [
 ]
 
 
+# 옷과 무관한 소장품 기관(자연사 표본, 항공우주, 우편). "jeans" 같은 검색어가 채집자 이름에 걸린다
+EXCLUDED_UNITS = ("NMNH", "NASM", "NPM", "NZP", "SERC", "STRI")
+
+
+def excluded_unit(unit_code: str) -> bool:
+    return unit_code.upper().startswith(EXCLUDED_UNITS)
+
+
 def load_key() -> str:
     key = os.environ.get("DATAGOV_KEY")
     if not key:
@@ -59,7 +67,7 @@ class Smithsonian:
         for attempt in range(7):
             try:
                 r = self.s.get(url, params=params, timeout=timeout)
-            except (requests.ConnectionError, requests.Timeout):
+            except requests.RequestException:  # 연결 끊김·시간 초과·전송 중단 모두 재시도
                 time.sleep(2 ** attempt * 3)
                 continue
             if r.status_code == 429:  # api.data.gov 시간당 한도
@@ -128,6 +136,10 @@ def collect(api: Smithsonian, out: Path, queries: list[str], max_objects: int, v
                     continue
                 done.add(oid)
                 stats["objects_seen"] += 1
+                unit = row.get("content", {}).get("descriptiveNonRepeating", {}).get("unit_code", "")
+                if excluded_unit(unit):
+                    reject("excluded_unit")
+                    continue
                 urls = cc0_media(row, views)
                 if not urls:
                     reject("not_cc0")

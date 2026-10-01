@@ -32,3 +32,10 @@ def test_collect_keeps_cc0_views_once(tmp_path):
     rows = list(csv.DictReader((tmp_path / "sources.csv").open(encoding="utf-8")))
     assert [r["title"] for r in rows] == ["si:a:0", "si:a:1"]
     assert rows[0]["license"] == "CC0" and rows[0]["seed"] == "smithsonian:dress|Dress a"
+
+
+def test_excluded_units():
+    from phase0.collect_smithsonian import excluded_unit
+
+    assert excluded_unit("NMNHBOTANY") and excluded_unit("NASM")
+    assert not excluded_unit("CHNDM") and not excluded_unit("NMAH")
