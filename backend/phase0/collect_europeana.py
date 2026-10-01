@@ -2,7 +2,7 @@
 
   - theme=fashion, reusability=open → Public Domain / CC0 / CC BY / CC BY-SA 만 나온다.
     rights 값을 한 번 더 확인해 NC·ND 가 섞여 들어오지 않게 한다.
-  - 이미지는 각 기관 서버(edmIsShownBy)에서 받는다. 받은 뒤 짧은 변이 작으면 버린다.
+  - 이미지는 각 기관 서버(edmIsShownBy)에서 받는다. 받은 뒤 짧은 변이 작으면 버리고, 긴 변 1600 으로 줄여 저장한다.
   - API 키는 저장소에 두지 않는다: 환경변수 EUROPEANA_KEY 또는 ~/.config/fitcheck/europeana_key
   - 기록 형식은 collect_commons 의 sources.csv 와 같다.
 
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Iterator
 
 from phase0.collect_commons import CSV_FIELDS, USER_AGENT
+from phase0.collect_met import shrink
 
 API = "https://api.europeana.eu/record/v2/search.json"
 OPEN_RIGHTS = re.compile(r"publicdomain/(zero|mark)|licenses/by(-sa)?/", re.I)
@@ -109,7 +110,7 @@ def image_size(body: bytes) -> tuple[int, int] | None:
 
 
 def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400,
-            query: str = "*", theme: str = "fashion") -> dict:
+            query: str = "*", theme: str = "fashion", max_side: int = 1600) -> dict:
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     csv_path = out / "sources.csv"
@@ -162,7 +163,8 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
                 continue
             seen_sha1.add(sha1)
             name = f"{sha1[:16]}.jpg"
-            (raw / name).write_bytes(body)
+            # 기관 원본은 수 MB 라 디스크를 많이 먹는다. 긴 변 max_side 로 줄여 저장한다(sha1 은 원본 기준)
+            (raw / name).write_bytes(shrink(body, max_side))
             writer.writerow({
                 "file": name,
                 "title": key,

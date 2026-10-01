@@ -42,3 +42,13 @@ def test_collect_filters_rights_size_and_records(tmp_path):
     rows = list(csv.DictReader((tmp_path / "sources.csv").open(encoding="utf-8")))
     assert rows[0]["license"] == "CC0" and rows[0]["credit"] == "Museum"
     assert rows[0]["seed"] == "europeana:fashion:Dress"
+
+
+def test_collect_shrinks_large_images(tmp_path):
+    class Big(FakeApi):
+        def download(self, url):
+            return jpeg((4000, 3000))
+
+    collect(Big(), tmp_path, max_files=1)
+    name = next((tmp_path / "raw").iterdir())
+    assert max(Image.open(name).size) == 1600
