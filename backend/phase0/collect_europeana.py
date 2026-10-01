@@ -95,7 +95,7 @@ class Europeana:
             yield from data.get("items", [])
             cursor = data.get("nextCursor")
 
-    def download(self, url: str, deadline: float = 90.0, max_bytes: int = 60 << 20) -> bytes | None:
+    def download(self, url: str, deadline: float = 45.0, max_bytes: int = 60 << 20) -> bytes | None:
         """기관 서버가 아주 느리게 흘려보내면 요청 timeout 이 매번 새로 시작돼 한 파일에 계속 매달린다.
         그래서 파일 하나에 전체 시간 상한(deadline)과 크기 상한을 두고, 넘으면 건너뛴다."""
         import requests
@@ -143,12 +143,13 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
         stats["reject"][why] = stats["reject"].get(why, 0) + 1
 
     # 기관 서버가 통째로 죽어 있으면(예: 모든 요청에 500) 건마다 몇 초씩 버린다.
-    # 기관별로 실패가 30건 이상이고 성공률이 10% 미만이면 그 기관의 나머지는 시도하지 않는다.
+    # 기관별로 실패가 20건 이상이고 성공률이 10% 미만이면 그 기관의 나머지는 시도하지 않는다.
     tries: dict[str, list[int]] = {}
+    last_provider = [None]
 
     def provider_down(provider: str) -> bool:
         ok, fail = tries.get(provider, [0, 0])
-        return fail >= 30 and ok < 0.1 * (ok + fail)
+        return fail >= 20 and ok < 0.1 * (ok + fail)
 
     with csv_path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
@@ -162,9 +163,12 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
                 continue
             seen_ids.add(key)
             stats["seen"] += 1
-            if stats["seen"] % 200 == 0:  # 건너뛰는 구간이 길 수 있어 진행 상황을 로그로 남긴다
-                provider = "; ".join(item.get("dataProvider") or [])
-                print(json.dumps({"provider": provider, **stats}, ensure_ascii=False), flush=True)
+            provider = "; ".join(item.get("dataProvider") or [])
+            # 건너뛰는 구간이 길 수 있어 진행 상황을 로그로 남긴다(50건마다, 기관이 바뀔 때마다)
+            if stats["seen"] % 50 == 0 or provider != last_provider[0]:
+                last_provider[0] = provider
+                print(json.dumps({"provider": provider, "provider_ok_fail": tries.get(provider, [0, 0]), **stats},
+                                 ensure_ascii=False), flush=True)
             rights = (item.get("rights") or [""])[0]
             if not rights_ok(rights):
                 reject("license")
@@ -173,7 +177,6 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
             if not url:
                 reject("no_image")
                 continue
-            provider = "; ".join(item.get("dataProvider") or [])
             if provider_down(provider):
                 reject("provider_unavailable")
                 continue

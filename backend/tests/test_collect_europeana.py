@@ -69,5 +69,5 @@ def test_collect_skips_provider_whose_server_is_down(tmp_path):
             return None
 
     stats = collect(Down(), tmp_path, max_files=10)
-    assert Down.downloads == 30
-    assert stats["reject"] == {"download_failed": 30, "provider_unavailable": 70}
+    assert Down.downloads == 20
+    assert stats["reject"] == {"download_failed": 20, "provider_unavailable": 80}
