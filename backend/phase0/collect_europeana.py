@@ -181,19 +181,22 @@ def collect(api: Europeana, out: Path, max_files: int, min_short_side: int = 400
                 reject("provider_unavailable")
                 continue
             body = api.download(url)
+            # 기관 성공률은 "실제로 쓸 수 있는 사진을 받았는가"로 센다(오류 페이지·작은 썸네일은 실패)
             counts = tries.setdefault(provider, [0, 0])
             if not body:
                 counts[1] += 1
                 reject("download_failed")
                 continue
-            counts[0] += 1
             size = image_size(body)
             if size is None:
+                counts[1] += 1
                 reject("not_image")
                 continue
             if min(size) < min_short_side:
+                counts[1] += 1
                 reject("small")
                 continue
+            counts[0] += 1
             sha1 = hashlib.sha1(body).hexdigest()
             if sha1 in seen_sha1:
                 reject("duplicate")

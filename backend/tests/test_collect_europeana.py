@@ -71,3 +71,18 @@ def test_collect_skips_provider_whose_server_is_down(tmp_path):
     stats = collect(Down(), tmp_path, max_files=10)
     assert Down.downloads == 20
     assert stats["reject"] == {"download_failed": 20, "provider_unavailable": 80}
+
+
+def test_provider_with_only_tiny_images_is_skipped(tmp_path):
+    cc0 = ["http://creativecommons.org/publicdomain/zero/1.0/"]
+
+    class Tiny:
+        def search(self, query, theme):
+            for i in range(50):
+                yield {"id": f"/t/{i}", "rights": cc0, "edmIsShownBy": [f"u{i}"], "dataProvider": ["Thumbs"]}
+
+        def download(self, url):
+            return jpeg((100, 100), color=(int(url[1:]) % 255, 0, 0))
+
+    stats = collect(Tiny(), tmp_path, max_files=10)
+    assert stats["reject"] == {"small": 20, "provider_unavailable": 30}
