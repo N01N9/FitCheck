@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image
 
 from unpaired.bank import load_usable
-from unpaired.engine import prepare
+from unpaired.engine import prepare, stem_of
 from unpaired.layered import Annotations
 from unpaired.pointer import dim_crop, outline
 
@@ -80,11 +80,11 @@ def from_swap(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: 
         row = index[rec["file"]]
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
         _, (inner,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])])
-        x = np.array(Image.open(engine_dir / "input" / f"{Path(rec['file']).stem}.jpg").convert("RGB"))
+        x = np.array(Image.open(engine_dir / "input" / f"{stem_of(rec)}.jpg").convert("RGB"))
         solo = "outer" not in row  # swap_solo: 겉옷 없이 다 보이는 상의를 바꾼 것
         layer = "single" if solo else f"inner under {row['outer']['category']}"
         source = "swap_solo" if solo else "swap"
-        w.add(f"{source}_{Path(rec['file']).stem}", pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
+        w.add(f"{source}_{stem_of(rec)}", pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], layer), EXTRACT_SIZE,
               {"source": source, "share_bin": rec.get("share_bin"), "product": rec["product"]})
 
@@ -93,7 +93,7 @@ def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index:
     for rec in map(json.loads, (engine_dir / "attempts.jsonl").read_text().splitlines()):
         if not rec["approved"]:
             continue
-        stem = Path(rec["file"]).stem
+        stem = stem_of(rec)
         row = index[rec["file"]]
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
         orig, (top,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])])

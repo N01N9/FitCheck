@@ -432,3 +432,18 @@ def test_eval_hidden_pick_and_region_de():
     m = np.zeros((10, 10), bool)
     m[2:5, 2:5] = True
     assert region_de(a, a, m) == 0.0 and region_de(a, a, np.zeros_like(m)) != region_de(a, a, np.zeros_like(m))
+
+
+def test_plan_jobs_multiple_products_and_chaining():
+    from unpaired.engine import plan_jobs, stem_of
+
+    bank = [{"item": f"t{i}", "category": "t-shirt", "view": "front"} for i in range(5)]
+    bank += [{"item": f"j{i}", "category": "jacket", "view": "front"} for i in range(3)]
+    rows = [{"file": "a.jpg", "inner": {"category": "t-shirt"}}, {"file": "b.jpg", "inner": {"category": "t-shirt"}}]
+    jobs = plan_jobs("swap_solo", rows, bank, 2)
+    assert [j[1] for j in jobs] == ["a", "a_p1", "b", "b_p1"]
+    assert all(j[2]["category"] == "t-shirt" for j in jobs) and jobs[0][2] != jobs[1][2]
+    swapped = [{"file": "a.jpg", "out_stem": "a_p1", "product": "t3", "product_category": "t-shirt"}]
+    chained = plan_jobs("layer", rows, bank, 1, swapped)
+    assert [(j[1], j[2]["category"], j[3]["product"]) for j in chained] == [("a_p1", "jacket", "t3")]
+    assert stem_of({"file": "x/y.jpg"}) == "y" and stem_of({"file": "y.jpg", "out_stem": "y_p2"}) == "y_p2"

@@ -202,7 +202,7 @@ def recheck(out: Path, ann: Annotations, bank: Path, index_dir: Path) -> dict:
         if rec["mode"] != "layer":
             new.append(rec)
             continue
-        stem = Path(rec["file"]).stem
+        stem = stem_of(rec)
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
         orig, (top,) = prepare(photo, [ann.mask(rec["file"], index[rec["file"]]["inner"]["ann_id"])])
         if rec.get("base"):
@@ -222,10 +222,36 @@ def pick_products(bank_rows: list[dict], categories, key: str, n: int = 1) -> li
     return pool[:n]
 
 
+def stem_of(rec: dict) -> str:
+    """시도 기록의 출력 파일 이름. 예전 기록(out_stem 없음)은 사진 이름 그대로다."""
+    return rec.get("out_stem") or Path(rec["file"]).stem
+
+
+def plan_jobs(mode: str, rows: list[dict], bank_rows: list[dict], per_photo: int,
+              swapped: list[dict] | None = None) -> list[tuple[dict, str, dict, dict | None]]:
+    """(사진 행, 출력 이름, 은행 상품, 바탕이 된 교체 기록) 목록. 사진 하나에 상품 per_photo 개까지."""
+    jobs = []
+    if swapped is not None:  # layer --from-swap: 승인된 교체 사진마다 겉옷을 입힌다
+        by_file = {r["file"]: r for r in rows}
+        for base in sorted(swapped, key=lambda r: h01(mode + stem_of(r))):
+            if base["file"] not in by_file:
+                continue
+            for k, prod in enumerate(pick_products(bank_rows, LAYER_CATEGORIES, stem_of(base), per_photo)):
+                jobs.append((by_file[base["file"]], stem_of(base) + (f"_p{k}" if k else ""), prod, base))
+        return jobs
+    for row in rows:
+        cats = LAYER_CATEGORIES if mode == "layer" else SWAP_CATEGORIES[row["inner"]["category"]]
+        stem = Path(row["file"]).stem
+        for k, prod in enumerate(pick_products(bank_rows, cats, row["file"], per_photo)):
+            jobs.append((row, stem + (f"_p{k}" if k else ""), prod, None))
+    return jobs
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="짝 데이터 엔진 (이너 교체 / 겉옷 덧입히기)")
     p.add_argument("mode", choices=["swap", "swap_solo", "layer", "recheck"])
-    p.add_argument("--n", type=int, default=200, help="시도 횟수")
+    p.add_argument("--n", type=int, default=200, help="사진 수(--from-swap 이면 바탕 교체 사진 수)")
+    p.add_argument("--products-per-photo", type=int, default=1, help="사진 하나에 바꿔 넣을 은행 상품 수")
     p.add_argument("--index-dir", default="data/unpaired/index")
     p.add_argument("--bank", default="data/unpaired/bank")
     p.add_argument("--fashionpedia", default="data/fashionpedia")
@@ -234,16 +260,17 @@ def main(argv=None) -> None:
     p.add_argument("--from-swap", help="layer: swap_solo 출력 폴더. 승인된 교체 사진 위에 겉옷을 덧입힌다")
     args = p.parse_args(argv)
 
-    import torch
-
-    from unpaired import editors
-
     out = Path(args.out)
     bank = Path(args.bank)
     ann = Annotations(Path(args.fashionpedia))
     if args.mode == "recheck":
         print(json.dumps(recheck(out, ann, bank, Path(args.index_dir)), ensure_ascii=False))
         return
+
+    import torch
+
+    from unpaired import editors
+
     (out / "input").mkdir(parents=True, exist_ok=True)
     (out / "raw").mkdir(parents=True, exist_ok=True)
     bank_rows = load_usable(bank)
@@ -251,43 +278,31 @@ def main(argv=None) -> None:
         rows = load(Path(args.index_dir) / "layered.jsonl", "train")
     else:
         rows = [r for r in load(Path(args.index_dir) / "solo_tops.jsonl", "train") if worn(ann, r["file"])]
-    swapped = {}
+    swapped = None
     if args.from_swap:
-        for rec in map(json.loads, (Path(args.from_swap) / "attempts.jsonl").read_text().splitlines()):
-            if rec["approved"]:
-                swapped[rec["file"]] = rec
-        rows = [r for r in rows if r["file"] in swapped]
-    rows.sort(key=lambda r: h01(args.mode + r["file"]))
-    rows = rows[: args.n]
+        swapped = [r for r in map(json.loads, (Path(args.from_swap) / "attempts.jsonl").read_text().splitlines())
+                   if r["approved"]][: args.n]
+    else:
+        rows = sorted(rows, key=lambda r: h01(args.mode + r["file"]))[: args.n]
+    jobs = plan_jobs(args.mode, rows, bank_rows, args.products_per_photo, swapped)
     model = editors.load("klein")
-    log = (out / "attempts.jsonl").open("a")
-    done = {json.loads(line)["file"] for line in (out / "attempts.jsonl").read_text().splitlines() if line}
-    for i, row in enumerate(rows):
-        if row["file"] in done:
+    log_path = out / "attempts.jsonl"
+    done = {stem_of(json.loads(line)) for line in log_path.read_text().splitlines() if line} if log_path.exists() else set()
+    log = log_path.open("a")
+    cache: dict[str, tuple] = {}
+    for i, (row, stem, prod, base) in enumerate(jobs):
+        if stem in done:
             continue
-        photo = np.array(Image.open(ann.image_dir / row["file"]).convert("RGB"))
         cat = row["inner"]["category"]
-        if args.mode == "swap":
-            masks = [ann.mask(row["file"], row["inner"]["ann_id"]),
-                     ann.mask(row["file"], row["outer"]["ann_id"])]
-            cats = SWAP_CATEGORIES[cat]
-        elif args.mode == "swap_solo":
+        if row["file"] not in cache:
+            photo = np.array(Image.open(ann.image_dir / row["file"]).convert("RGB"))
             masks = [ann.mask(row["file"], row["inner"]["ann_id"])]
-            cats = SWAP_CATEGORIES[cat]
-        else:
-            masks = [ann.mask(row["file"], row["inner"]["ann_id"])]
-            cats = LAYER_CATEGORIES
-        orig, masks = prepare(photo, masks)
-        stem = Path(row["file"]).stem
-        inner_product = None
-        if args.mode == "layer" and args.from_swap:
-            # 교체한 사진이 새 원본이 된다(크기는 prepare 와 같다)
-            orig = np.array(Image.open(Path(args.from_swap) / "input" / f"{stem}.jpg").convert("RGB"))
-            inner_product = swapped[row["file"]]["product"]
-        prod = pick_products(bank_rows, cats, row["file"])
-        if not prod:
-            continue
-        prod = prod[0]
+            if args.mode == "swap":
+                masks.append(ann.mask(row["file"], row["outer"]["ann_id"]))
+            cache = {row["file"]: prepare(photo, masks)}  # 같은 사진의 다음 상품까지만 들고 있는다
+        orig, masks = cache[row["file"]]
+        if base is not None:  # 교체한 사진이 새 원본이 된다(크기는 prepare 와 같다)
+            orig = np.array(Image.open(Path(args.from_swap) / "input" / f"{stem_of(base)}.jpg").convert("RGB"))
         prod_img, prod_mask = product_pixels(bank, prod["view"], prod["item"])
         prod_pal = palette(srgb_to_lab(prod_img)[erode(prod_mask, 4)])
         outer_name = row["outer"]["category"] if args.mode == "swap" else prod["category"]
@@ -303,8 +318,7 @@ def main(argv=None) -> None:
         if args.mode in ("swap", "swap_solo"):
             inner, outer = masks if args.mode == "swap" else (masks[0], None)
             px = max(2, round(0.01 * max(orig.shape[:2])))
-            region = dilate(inner, px)
-            x = composite(orig, gen, feather(region, px))
+            x = composite(orig, gen, feather(dilate(inner, px), px))
             check = swap_check(orig, x, inner, outer, prod_pal)
             extra = {"inner_share": row["inner_share"], "share_bin": row["share_bin"]} if outer is not None else {}
         else:
@@ -312,17 +326,18 @@ def main(argv=None) -> None:
             x = composite(orig, gen, feather(dilate(jacket, 2), 3))
             Image.fromarray((jacket * 255).astype(np.uint8)).save(out / "input" / f"{stem}_jacket.png")
             extra = {}
-            if inner_product:
-                extra = {"inner_product": inner_product, "base": str(Path(args.from_swap) / "input" / f"{stem}.jpg"),
-                         "inner_product_category": swapped[row["file"]]["product_category"]}
+            if base is not None:
+                extra = {"inner_product": base["product"], "inner_product_category": base["product_category"],
+                         "base": str(Path(args.from_swap) / "input" / f"{stem_of(base)}.jpg")}
+            if not worn(ann, row["file"]):
+                check["reasons"].append("사람이 입은 사진 아님")
         Image.fromarray(x).save(out / "input" / f"{stem}.jpg", quality=95)
-        rec = {"file": row["file"], "mode": args.mode, "inner_category": cat, "product": prod["item"],
+        rec = {"file": row["file"], "out_stem": stem, "mode": args.mode, "inner_category": cat, "product": prod["item"],
                "product_category": prod["category"], "seconds": round(sec, 1), "size": orig.shape[1::-1],
                "approved": not check["reasons"], **check, **extra}
         log.write(json.dumps(rec, ensure_ascii=False, default=float) + "\n")
         log.flush()
-        print(f"[{i + 1}/{len(rows)}] {row['file']} approved={rec['approved']} {check['reasons']}", flush=True)
-
+        print(f"[{i + 1}/{len(jobs)}] {stem} approved={rec['approved']} {check['reasons']}", flush=True)
 
 if __name__ == "__main__":
     main()

@@ -28,7 +28,7 @@ from PIL import Image
 
 from unpaired import gates
 from unpaired.bank import load_usable
-from unpaired.engine import prepare, product_pixels
+from unpaired.engine import prepare, product_pixels, stem_of
 from unpaired.layered import Annotations
 from unpaired.score import masked_crop
 
@@ -103,7 +103,7 @@ def main(argv=None) -> None:
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
         _, (inner, outer) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"]),
                                             ann.mask(rec["file"], row["outer"]["ann_id"])])
-        x = np.array(Image.open(swap / "input" / f"{Path(rec['file']).stem}.jpg").convert("RGB"))
+        x = np.array(Image.open(swap / "input" / f"{stem_of(rec)}.jpg").convert("RGB"))
         prod, prod_mask = product_pixels(bank, "front", rec["product"])
         pool = [i for i in by_cat[rec["product_category"]] if i != rec["product"]]
         other_id = sorted(pool, key=lambda i: hashlib.sha1((rec["file"] + i).encode()).hexdigest())[0]
