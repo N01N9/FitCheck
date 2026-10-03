@@ -447,3 +447,18 @@ def test_plan_jobs_multiple_products_and_chaining():
     chained = plan_jobs("layer", rows, bank, 1, swapped)
     assert [(j[1], j[2]["category"], j[3]["product"]) for j in chained] == [("a_p1", "jacket", "t3")]
     assert stem_of({"file": "x/y.jpg"}) == "y" and stem_of({"file": "y.jpg", "out_stem": "y_p2"}) == "y_p2"
+
+
+def test_verifier_negatives_change_the_garment():
+    from unpaired.verifier import NEGATIVES, negative, on_white
+
+    img = np.full((200, 200, 3), 255, np.uint8)
+    mask = np.zeros((200, 200), bool)
+    mask[40:160, 50:150] = True
+    img[mask] = (200, 30, 40)
+    other = (np.full((200, 200, 3), (20, 20, 120), np.uint8), mask.copy())
+    rng = np.random.default_rng(0)
+    pos = np.asarray(on_white(img, mask))
+    for kind in NEGATIVES:
+        neg = np.asarray(negative(kind, img, mask, other, rng).convert("RGB").resize((448, 448)))
+        assert neg.shape == (448, 448, 3) and np.abs(neg.astype(int) - pos.astype(int)).mean() > 2, kind
