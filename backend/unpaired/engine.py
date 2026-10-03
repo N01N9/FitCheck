@@ -26,6 +26,7 @@ import numpy as np
 from PIL import Image
 
 from core.color import srgb_to_lab
+from unpaired.bank import load_usable
 from unpaired.color import delta_e2000, nearest, palette, palette_distance
 from unpaired.gates import erode, fill_holes
 from unpaired.layered import Annotations, load
@@ -190,7 +191,7 @@ def main(argv=None) -> None:
     (out / "input").mkdir(parents=True, exist_ok=True)
     (out / "raw").mkdir(parents=True, exist_ok=True)
     bank = Path(args.bank)
-    bank_rows = [r for r in map(json.loads, (bank / "bank.jsonl").read_text().splitlines()) if r["accepted"]]
+    bank_rows = load_usable(bank)
     ann = Annotations(Path(args.fashionpedia))
     if args.mode == "swap":
         rows = load(Path(args.index_dir) / "layered.jsonl", "train")

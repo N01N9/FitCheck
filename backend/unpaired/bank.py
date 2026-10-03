@@ -109,6 +109,21 @@ def normalize(img: np.ndarray, alpha: np.ndarray, size: int = SIZE, fill: float 
     return Image.fromarray(canvas.round().astype(np.uint8)), Image.fromarray((mask * 255).round().astype(np.uint8))
 
 
+# station3(Myrorna)은 옷걸이에 건 채로 찍어 누끼에 옷걸이·가격표가 같이 들어간다. 정답에서 뺀다
+EXCLUDED_STATIONS = {"station3"}
+
+
+def load_usable(bank: Path, view: str = "front") -> list[dict]:
+    """정답으로 쓸 은행 품목: 품질 통과 + 제외 촬영대 아님 + 방향 이상 아님(판별 결과가 있을 때)."""
+    rows = [r for r in map(json.loads, (bank / "bank.jsonl").read_text().splitlines())
+            if r["accepted"] and r["view"] == view and r["station"] not in EXCLUDED_STATIONS]
+    orient = bank / f"orient_{view}.jsonl"
+    if orient.exists():
+        bad = {o["item"] for o in map(json.loads, orient.read_text().splitlines()) if o["suspect_angle"]}
+        rows = [r for r in rows if r["item"] not in bad]
+    return rows
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="Second-Hand 데이터셋 → 정답 상품 사진 은행")
     p.add_argument("--src", default="data/secondhand")
@@ -116,6 +131,7 @@ def main(argv=None) -> None:
     p.add_argument("--views", default="front", help="front 또는 front,back")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--stride", type=int, default=1, help="N 개마다 하나씩(시범용 표본)")
+    p.add_argument("--all-stations", action="store_true", help="EXCLUDED_STATIONS 도 처리한다")
     args = p.parse_args(argv)
 
     from phase0.exp0_edit_models import disable_broken_cudnn
@@ -135,7 +151,7 @@ def main(argv=None) -> None:
     log = manifest.open("a")
     start, n = time.perf_counter(), 0
     for idx, it in enumerate(items(Path(args.src))):
-        if idx % args.stride:
+        if idx % args.stride or (it["station"] in EXCLUDED_STATIONS and not args.all_stations):
             continue
         labels = json.loads(it["labels"].read_text())
         cat = category(labels)

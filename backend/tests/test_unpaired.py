@@ -287,3 +287,46 @@ def test_paste_occluder_fits_top_and_leaves_middle_visible():
 
     far = ~dilate(jacket, 3) & ~top  # 가장자리는 부드럽게 섞이므로 몇 픽셀 떨어진 곳만 본다
     assert (out[far] == 200).all()
+
+
+def test_orient_choose_flags_only_clear_rotations():
+    from unpaired.orient import choose
+
+    c = np.array([1.0, 0.0, 0.0])
+    upright = np.array([[0.9, 0.1, 0.0], [0.2, 0.9, 0.0], [0.1, 0.0, 0.9], [0.3, 0.3, 0.3]])
+    upright /= np.linalg.norm(upright, axis=1, keepdims=True)
+    assert choose(upright, c)[0] == 0
+    sideways = upright[[1, 0, 2, 3]]  # 90° 로 돌린 쪽이 기준에 더 가깝다
+    assert choose(sideways, c)[0] == 90
+    close = np.array([[0.70, 0.71, 0.0], [0.71, 0.70, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    close /= np.linalg.norm(close, axis=1, keepdims=True)
+    assert choose(close, c)[0] == 0  # 차이가 MARGIN 보다 작으면 의심하지 않는다
+
+
+def test_score_summary_counts_single_oracle_and_picked():
+    from unpaired.score import summarize
+
+    def row(k, correct, color, gate):
+        return {"file": "a.jpg", "variant": "outline", "k": k, "share_bin": "lt15", "correct": correct,
+                "correct_color": color, "passed": gate < 1000, "gate_score": gate, "scores": {"palette_dist": 5.0}}
+
+    rows = [row(0, False, False, 2000), row(1, True, False, 1500), row(2, True, True, 10), row(3, False, False, 1200)]
+    cell = summarize(rows)["outline"]["lt15"]
+    assert cell["single"] == 0 and cell["oracle"] == 1 and cell["picked"] == 1
+    assert cell["single_c"] == 0 and cell["oracle_c"] == 1 and cell["picked_c"] == 1
+    assert cell["gate_pass"] == 0.25 and cell["precision"] == 1.0
+
+
+def test_load_usable_drops_rejected_hanger_station_and_rotated(tmp_path):
+    import json
+
+    from unpaired.bank import load_usable
+
+    rows = [{"item": "a", "view": "front", "station": "station1", "accepted": True},
+            {"item": "b", "view": "front", "station": "station3", "accepted": True},
+            {"item": "c", "view": "front", "station": "station2", "accepted": False},
+            {"item": "d", "view": "front", "station": "station2", "accepted": True}]
+    (tmp_path / "bank.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    assert [r["item"] for r in load_usable(tmp_path)] == ["a", "d"]
+    (tmp_path / "orient_front.jsonl").write_text(json.dumps({"item": "d", "suspect_angle": 180}))
+    assert [r["item"] for r in load_usable(tmp_path)] == ["a"]

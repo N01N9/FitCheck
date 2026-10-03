@@ -4,10 +4,10 @@
   평가(보고용)    DINOv2-large(학습 안 함) 검색 순위. 결과물이 사진 속 옷들 중 대상 옷과 가장
                  닮았으면(1위) 맞는 옷으로 본다. 겉옷을 내놓거나 겉옷과 합친 실패를 잡는다
 
-지표(변형 × 가시율 구간)
+지표(변형 × 가시율 구간). 뒤에 _c 가 붙은 것은 "맞는 옷 + 보이는 색 일치"(COLOR_OK) 기준이다
   single  첫 장(k=0)이 맞는 옷인 비율
   oracle  K장 중 하나라도 맞는 비율 (검사기가 완벽할 때의 상한)
-  picked  검사기 점수로 고른 한 장이 맞는 비율
+  picked  검사기 점수로 고른 한 장이 맞는 비율 (검사기가 색도 보므로 picked_c 는 낙관적이다)
   gate_pass, precision  검사 통과율, 통과한 것 중 맞는 비율
 
 사용 (컨테이너 안)
@@ -30,6 +30,13 @@ from unpaired.masks import bbox
 
 DINO_ID = "facebook/dinov2-large"
 DINO_SIZE = 448  # 14 의 배수
+COLOR_OK = 12.0  # 평가용 색 일치: 대상의 보이는 색 → 결과물 팔레트 거리(ΔE00, kL=2)
+
+
+def color_ok(scores: dict) -> bool:
+    if scores.get("palette_dist", 99.0) > COLOR_OK:
+        return False
+    return not (scores.get("target_chroma", 0.0) > 8 and not 0.5 <= scores.get("chroma_ratio", 0.0) <= 2.0)
 
 
 def masked_crop(img: np.ndarray, mask: np.ndarray, pad: float = 0.05) -> Image.Image:
@@ -78,9 +85,10 @@ def summarize(rows: list[dict]) -> dict:
         items.sort(key=lambda r: r["k"])
         picked = min(items, key=lambda r: r["gate_score"])
         cell = table[variant][b]
-        cell["single"].append(items[0]["correct"])
-        cell["oracle"].append(any(r["correct"] for r in items))
-        cell["picked"].append(picked["correct"])
+        for key, suffix in (("correct", ""), ("correct_color", "_c")):
+            cell["single" + suffix].append(items[0][key])
+            cell["oracle" + suffix].append(any(r[key] for r in items))
+            cell["picked" + suffix].append(picked[key])
         cell["picked_passed"].append(picked["passed"])
         cell["gate_pass"].extend(r["passed"] for r in items)
         cell["correct_any_k"].extend(r["correct"] for r in items)
@@ -92,7 +100,8 @@ def summarize(rows: list[dict]) -> dict:
         for b, cell in bins.items():
             out[variant][b] = {
                 "n": len(cell["single"]),
-                **{k: round(float(np.mean(v)), 3) if v else None for k, v in cell.items() if k != "picked_palette_dist"},
+                **{k: round(float(np.mean(v)), 3) if v else None for k, v in cell.items()
+                   if k != "picked_palette_dist"},
                 "picked_palette_dist_median": round(float(np.nanmedian(cell["picked_palette_dist"])), 2),
             }
     return out
@@ -135,7 +144,9 @@ def main(argv=None) -> None:
                              "scores": g.scores, "gate_score": gates.score(g),
                              "sim_target": round(float(sims[0]), 4),
                              "sim_outer": round(float(sims[outer_pos]), 4) if outer_pos else None,
-                             "margin": round(margin, 4), "correct": margin > 0 and 0.02 <= g.scores["fg_frac"]})
+                             "margin": round(margin, 4)})
+                rows[-1]["correct"] = margin > 0 and 0.02 <= g.scores["fg_frac"]
+                rows[-1]["correct_color"] = rows[-1]["correct"] and color_ok(g.scores)
         print(f"scored {case['file']}", flush=True)
     with (run / "scores.jsonl").open("w") as fh:
         for r in rows:
