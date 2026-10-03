@@ -113,12 +113,16 @@ def normalize(img: np.ndarray, alpha: np.ndarray, size: int = SIZE, fill: float 
 EXCLUDED_STATIONS = {"station3"}
 
 
-def load_usable(bank: Path, view: str = "front") -> list[dict]:
-    """정답으로 쓸 은행 품목: 품질 통과 + 제외 촬영대 아님 + 방향 이상 아님(판별 결과가 있을 때)."""
+def load_usable(bank: Path, view: str = "front", drop_orient_suspects: bool = False) -> list[dict]:
+    """정답으로 쓸 은행 품목: 품질 통과 + 제외 촬영대 아님.
+
+    방향 판별(orient.py)로 빼는 것은 기본으로 끈다. 2026-10-03 표본 1,177벌 중 의심 64벌을 눈으로 보니
+    거의 다 바로 선 사진이었고, 그림·로고가 있는 옷을 골라 의심해서 빼면 그래픽 옷이 줄어든다.
+    """
     rows = [r for r in map(json.loads, (bank / "bank.jsonl").read_text().splitlines())
             if r["accepted"] and r["view"] == view and r["station"] not in EXCLUDED_STATIONS]
     orient = bank / f"orient_{view}.jsonl"
-    if orient.exists():
+    if drop_orient_suspects and orient.exists():
         bad = {o["item"] for o in map(json.loads, orient.read_text().splitlines()) if o["suspect_angle"]}
         rows = [r for r in rows if r["item"] not in bad]
     return rows

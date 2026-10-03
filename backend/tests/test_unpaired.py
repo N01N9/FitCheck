@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -329,4 +330,34 @@ def test_load_usable_drops_rejected_hanger_station_and_rotated(tmp_path):
     (tmp_path / "bank.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
     assert [r["item"] for r in load_usable(tmp_path)] == ["a", "d"]
     (tmp_path / "orient_front.jsonl").write_text(json.dumps({"item": "d", "suspect_angle": 180}))
-    assert [r["item"] for r in load_usable(tmp_path)] == ["a"]
+    assert [r["item"] for r in load_usable(tmp_path)] == ["a", "d"]  # 방향 판별로 빼는 것은 기본으로 끈다
+    assert [r["item"] for r in load_usable(tmp_path, drop_orient_suspects=True)] == ["a"]
+
+
+def test_pairs_from_flatlay_writes_refs_and_real_targets(tmp_path):
+    import json
+
+    from PIL import Image
+
+    from unpaired.pairs import Writer, fit, from_flatlay
+
+    assert fit(np.zeros((100, 300, 3), np.uint8), 768).size == (768, 256)
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    img = np.full((64, 64, 3), 128, np.uint8)
+    labels = np.zeros((64, 64), np.uint8)
+    labels[10:40, 10:40] = 1
+    labels[30:60, 30:60] = 2
+    Image.fromarray(img).save(flat / "scene00000.jpg")
+    Image.fromarray(labels).save(flat / "scene00000_labels.png")
+    scene = {"scene": "scene00000", "items": [
+        {"item": "a", "category": "t-shirt", "label": 1, "visible_frac": 0.8, "target": True},
+        {"item": "b", "category": "jeans", "label": 2, "visible_frac": 1.0, "target": False}]}
+    (flat / "scenes.jsonl").write_text(json.dumps(scene) + "\n")
+    w = Writer(tmp_path / "pairs")
+    from_flatlay(w, flat, tmp_path / "bank")
+    w.fh.close()
+    rows = [json.loads(line) for line in (tmp_path / "pairs" / "pairs.jsonl").read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]["prompt"] == "[EXTRACT] t-shirt; layer=flat"
+    assert rows[0]["target"].endswith("bank/front/a.jpg") and len(rows[0]["refs"]) == 2
+    assert all(Path(r).exists() for r in rows[0]["refs"])
