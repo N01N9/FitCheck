@@ -8,6 +8,7 @@
   identity  [EXTRACT] 상품 사진 자체 + 외곽선                         → 같은 상품 사진
 
 정답은 모두 실제 사진(은행 상품 또는 원본)이다. 참조 이미지는 refs/ 에 저장한다.
+쌍 이름에 출력 폴더 이름을 넣는다. 같은 사진을 여러 실행에서 썼을 때(상품은 다름) 겹치지 않게 하려고.
 """
 
 from __future__ import annotations
@@ -52,8 +53,12 @@ class Writer:
         (out / "targets").mkdir(parents=True, exist_ok=True)
         self.fh = (out / "pairs.jsonl").open("a")
         self.n = 0
+        self.seen: set[str] = set()
 
     def add(self, pid: str, refs: list[Image.Image], target: str | Image.Image, prompt: str, size, meta: dict):
+        if pid in self.seen:  # 같은 이름이면 참조 이미지를 덮어써서 다른 쌍의 입력이 바뀐다
+            raise ValueError(f"쌍 이름이 겹칩니다: {pid}")
+        self.seen.add(pid)
         paths = []
         for i, r in enumerate(refs):
             p = self.out / "refs" / f"{pid}_r{i}.jpg"
@@ -84,7 +89,7 @@ def from_swap(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: 
         solo = "outer" not in row  # swap_solo: 겉옷 없이 다 보이는 상의를 바꾼 것
         layer = "single" if solo else f"inner under {row['outer']['category']}"
         source = "swap_solo" if solo else "swap"
-        w.add(f"{source}_{stem_of(rec)}", pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
+        w.add(f"{source}_{engine_dir.name}_{stem_of(rec)}", pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], layer), EXTRACT_SIZE,
               {"source": source, "share_bin": rec.get("share_bin"), "product": rec["product"]})
 
@@ -102,13 +107,13 @@ def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index:
         x = np.array(Image.open(engine_dir / "input" / f"{stem}.jpg").convert("RGB"))
         jacket = np.asarray(Image.open(engine_dir / "input" / f"{stem}_jacket.png")) > 127
         peel_target = fit(orig, PEEL_LONG_SIDE)
-        w.add(f"peel_{stem}", [fit(outline(x, jacket), REF_LONG_SIDE)], peel_target, peel_prompt(rec["product_category"]),
+        w.add(f"peel_{engine_dir.name}_{stem}", [fit(outline(x, jacket), REF_LONG_SIDE)], peel_target, peel_prompt(rec["product_category"]),
               peel_target.size, {"source": "layer_peel"})
-        w.add(f"outer_{stem}", pointer_refs(x, jacket), str(bank / "front" / f"{rec['product']}.jpg"),
+        w.add(f"outer_{engine_dir.name}_{stem}", pointer_refs(x, jacket), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], "outer"), EXTRACT_SIZE,
               {"source": "layer_outer", "product": rec["product"]})
         if rec.get("inner_product"):  # 이너도 은행 상품이므로 실제 정답이 있다
-            w.add(f"inner_{stem}", pointer_refs(x, top & ~jacket), str(bank / "front" / f"{rec['inner_product']}.jpg"),
+            w.add(f"inner_{engine_dir.name}_{stem}", pointer_refs(x, top & ~jacket), str(bank / "front" / f"{rec['inner_product']}.jpg"),
                   extract_prompt(rec["inner_product_category"], f"inner under {rec['product_category']}"),
                   EXTRACT_SIZE, {"source": "layer_inner", "product": rec["inner_product"]})
 
@@ -121,7 +126,7 @@ def from_flatlay(w: Writer, flat_dir: Path, bank: Path) -> None:
             if not it["target"]:
                 continue
             mask = labels == it["label"]
-            w.add(f"flat_{scene['scene']}_{it['label']}", pointer_refs(img, mask),
+            w.add(f"flat_{flat_dir.name}_{scene['scene']}_{it['label']}", pointer_refs(img, mask),
                   str(bank / "front" / f"{it['item']}.jpg"), extract_prompt(it["category"], "flat"), EXTRACT_SIZE,
                   {"source": "flatlay", "product": it["item"], "visible_frac": it["visible_frac"]})
 

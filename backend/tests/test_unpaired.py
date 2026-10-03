@@ -462,3 +462,15 @@ def test_verifier_negatives_change_the_garment():
     for kind in NEGATIVES:
         neg = np.asarray(negative(kind, img, mask, other, rng).convert("RGB").resize((448, 448)))
         assert neg.shape == (448, 448, 3) and np.abs(neg.astype(int) - pos.astype(int)).mean() > 2, kind
+
+
+def test_pairs_writer_refuses_duplicate_ids(tmp_path):
+    from PIL import Image
+
+    from unpaired.pairs import Writer
+
+    w = Writer(tmp_path)
+    img = Image.new("RGB", (32, 32))
+    w.add("a", [img], img, "p", (32, 32), {})
+    with pytest.raises(ValueError):
+        w.add("a", [img], img, "p", (32, 32), {})
