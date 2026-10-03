@@ -22,6 +22,9 @@ from PIL import Image
 QIE_ID = "Qwen/Qwen-Image-Edit-2511"
 QIE_LIGHTNING = ("lightx2v/Qwen-Image-Edit-2511-Lightning", "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors")
 KLEIN_ID = "black-forest-labs/FLUX.2-klein-4B"
+# 옷 꺼내기 전용 LoRA (Apache-2.0 표기, 학습 데이터 비공개 -> 비교용). 전용 문구가 있다
+QIE_OUTFIT = ("prithivMLmods/QIE-2511-Extract-Outfit", "QIE-2511-Extract-Outfit-4200.safetensors")
+OUTFIT_TRIGGER = "Extract the clothing and create a flat mockup."
 
 NEGATIVE = "person, body, hands, mannequin, hanger, text overlay, watermark, blurry, deformed"
 
@@ -45,7 +48,7 @@ def crop_box(img: Image.Image, box: list[float]) -> Image.Image:
 class Qie:
     name = "qie2511"
 
-    def __init__(self, lightning: bool):
+    def __init__(self, lightning: bool, outfit_lora: bool = False):
         import torch
         from diffusers import QwenImageEditPlusPipeline
         from huggingface_hub import hf_hub_download
@@ -55,9 +58,17 @@ class Qie:
         # 두 번 들게 되어 메모리가 바닥나 시스템이 멈췄다(2026-10-02). GPU 로 바로 올린다.
         self.pipe = QwenImageEditPlusPipeline.from_pretrained(QIE_ID, torch_dtype=torch.bfloat16, device_map="cuda")
         self.lightning = lightning
+        adapters = []
         if lightning:
-            self.pipe.load_lora_weights(hf_hub_download(*QIE_LIGHTNING))
+            self.pipe.load_lora_weights(hf_hub_download(*QIE_LIGHTNING), adapter_name="lightning")
+            adapters.append("lightning")
             self.name = "qie2511_lightning4"
+        if outfit_lora:
+            self.pipe.load_lora_weights(hf_hub_download(*QIE_OUTFIT), adapter_name="outfit")
+            adapters.append("outfit")
+            self.name += "_outfit"
+        if adapters:
+            self.pipe.set_adapters(adapters, adapter_weights=[1.0] * len(adapters))
 
     def __call__(self, images, prompt, seed):
         steps, cfg = (4, 1.0) if self.lightning else (30, 4.0)
@@ -98,7 +109,7 @@ def disable_broken_cudnn() -> None:
     torch.backends.cudnn.enabled = False
 
 
-def run(model, cases: list[dict], out: Path, seed: int) -> list[dict]:
+def run(model, cases: list[dict], out: Path, seed: int, prompt_mode: str = "case") -> list[dict]:
     import torch
 
     out.mkdir(parents=True, exist_ok=True)
@@ -110,7 +121,9 @@ def run(model, cases: list[dict], out: Path, seed: int) -> list[dict]:
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
         start = time.perf_counter()
-        result = model(images, case["prompt"], seed)
+        prompt = {"case": case["prompt"], "trigger": OUTFIT_TRIGGER,
+                  "trigger+case": f"{OUTFIT_TRIGGER} {case['prompt']}"}[prompt_mode]
+        result = model(images, prompt, seed)
         torch.cuda.synchronize()
         sec = time.perf_counter() - start
         result.save(out / f"{case['id']}.png")
@@ -127,7 +140,9 @@ def run(model, cases: list[dict], out: Path, seed: int) -> list[dict]:
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="실험 0: 편집 모델 속도·결과 비교")
-    p.add_argument("--model", choices=["qie", "qie-lightning", "klein"], required=True)
+    p.add_argument("--model", choices=["qie", "qie-lightning", "qie-outfit", "klein"], required=True)
+    p.add_argument("--prompt-mode", choices=["case", "trigger", "trigger+case"], default="case",
+                   help="trigger: 옷 꺼내기 LoRA 전용 문구만 / trigger+case: 전용 문구 + 대상 지정")
     p.add_argument("--cases", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=0)
@@ -136,13 +151,17 @@ def main(argv=None) -> None:
     disable_broken_cudnn()
     require_free_memory(30 if args.model == "klein" else 75)
     t0 = time.perf_counter()
-    model = Klein() if args.model == "klein" else Qie(lightning=args.model == "qie-lightning")
+    if args.model == "klein":
+        model = Klein()
+    else:
+        model = Qie(lightning=args.model in ("qie-lightning", "qie-outfit"), outfit_lora=args.model == "qie-outfit")
     load_s = time.perf_counter() - t0
     cases = json.loads(Path(args.cases).read_text())
     # 첫 호출은 커널 준비 시간이 섞이므로 같은 첫 케이스를 한 번 먼저 돌려 버린다(warm-up)
-    run(model, cases[:1], Path(args.out) / model.name / "_warmup", args.seed)
-    rows = run(model, cases, Path(args.out) / model.name, args.seed)
-    (Path(args.out) / model.name / "timings.json").write_text(
+    out_dir = Path(args.out) / (model.name if args.prompt_mode == "case" else f"{model.name}_{args.prompt_mode.replace('+', '_')}")
+    run(model, cases[:1], out_dir / "_warmup", args.seed, args.prompt_mode)
+    rows = run(model, cases, out_dir, args.seed, args.prompt_mode)
+    (out_dir / "timings.json").write_text(
         json.dumps({"model": model.name, "load_seconds": round(load_s, 1), "cases": rows}, indent=2))
 
 
