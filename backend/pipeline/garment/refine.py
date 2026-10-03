@@ -60,6 +60,9 @@ class BiRefNetRemover:
         from torchvision import transforms
         from transformers import AutoModelForImageSegmentation
 
+        from pipeline.garment.gpu import guard_cudnn
+
+        guard_cudnn()  # GB10 에서는 cuDNN 합성곱이 틀린 마스크를 낸다
         self.torch = torch
         self.model_id = model_id
         self.cuda = torch.cuda.is_available()

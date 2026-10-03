@@ -316,3 +316,16 @@ def test_photo_result_round_trips_through_json(tmp_path):
     again = PhotoResult.from_dict(json.loads(json.dumps(r.to_dict())))
     assert again.scene.case == "case2" and again.scene.expected_count == 1
     assert again.items[0].occlusion == 0.3 and again.items[0].id == "item_00"
+
+
+def test_guard_cudnn_only_on_broken_gpu(monkeypatch):
+    import torch
+
+    from pipeline.garment import gpu
+
+    monkeypatch.setattr(torch.backends.cudnn, "enabled", True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (9, 0))
+    assert gpu.guard_cudnn() is False and torch.backends.cudnn.enabled
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 1))
+    assert gpu.guard_cudnn() is True and not torch.backends.cudnn.enabled
