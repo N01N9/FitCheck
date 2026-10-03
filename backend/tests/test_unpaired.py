@@ -388,3 +388,15 @@ def test_yield_summary():
     assert s["approval_rate"] == round(2 / 3, 3) and s["gpu_seconds_per_approved"] == 13.0
     assert s["reasons"] == {"겉옷이 바뀜": 1} and s["approval_by_share_bin"] == {"lt15": 0.5, "15_40": 1.0}
     assert s["approval_by_product"] == {"t-shirt": "1/2", "shirt": "1/1"}
+
+
+def test_gate_rejects_strip_and_lightness_flip():
+    photo, target, outer = scene()
+    strip = np.full((256, 256, 3), 255, np.uint8)
+    strip[20:236, 118:138] = (205, 35, 45)  # 보이는 띠만 잘라 붙인 결과
+    r = gates.check(photo, target, outer, strip, category="t-shirt")
+    assert "펼친 옷 모양이 아님" in r.reasons
+    white = np.full((200, 160, 3), 200, np.uint8)
+    white[target] = (245, 245, 245)
+    grey = product((110, 110, 110))
+    assert "밝기가 크게 달라짐" in gates.check(white, target, None, grey).reasons

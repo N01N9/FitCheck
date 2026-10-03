@@ -173,7 +173,7 @@ def main(argv=None) -> None:
             for path in sorted(vdir.glob(f"{stem}_k*.png")):
                 result = np.array(Image.open(path).convert("RGB"))
                 fg = np.asarray(remover.predict_mask(Image.fromarray(result))) > 127
-                g = gates.check(photo, inner, outer, result, fg)
+                g = gates.check(photo, inner, outer, result, fg, category=case["inner"]["category"])
                 sims = ref @ dino([masked_crop(result, fg) if fg.sum() > 50 else Image.fromarray(result)])[0]
                 margin = float(sims[0] - sims[1:].max()) if len(sims) > 1 else 1.0
                 outer_pos = next((i + 1 for i, a in enumerate(others) if a["id"] == case["outer"]["ann_id"]), None)

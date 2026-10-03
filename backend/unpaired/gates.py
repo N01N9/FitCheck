@@ -4,6 +4,7 @@
   1) 형식: 단색 배경 위에 옷 한 벌만 있는가
   2) 색: 대상 옷의 보이는 색과 맞는가 (조명 보정 ΔE00, 채도 비율 — 남색→검정 같은 오류를 잡는다)
   3) 겉옷 섞임: 결과물 픽셀 중 겉옷 색에 더 가까운 비율이 얼마인가
+  4) 모양: 펼친 옷의 가로세로 비율인가 (보이는 띠만 잘라 붙인 결과를 거른다)
 를 수치로 낸다. 임계값은 tune 분할과 음성 대조군으로 정하고, 보고용 분할에서는 바꾸지 않는다.
 
 배경 분리: 결과물의 전경 마스크가 주어지면(예: BiRefNet) 그것을 쓰고, 없으면 테두리 색과의
@@ -32,7 +33,21 @@ THRESHOLDS = {
     "chroma_ratio_max": 2.0,
     "outer_frac_max": 0.15,
     "same_color_sep": 10.0,     # 대상·겉옷 팔레트가 이보다 가까우면 겉옷 섞임은 판정하지 않는다
+    "lightness_gap_max": 35.0,  # 밝기 중앙값 차이. 조명 차이는 봐주되 흰 옷 → 회색 같은 뒤집힘은 거른다
 }
+
+# 옷 종류별 최소 가로/세로 비율(전경 bbox). 보정 v0 에서 "보이는 띠" 조각이 색만으로는 통과했다
+ASPECT_MIN = {"top": 0.5, "bottom": 0.25, "onepiece": 0.3}
+BOTTOMS = {"trousers", "jeans", "shorts", "skirt", "pants", "rain trousers", "winter trousers", "leggings"}
+ONEPIECES = {"dress", "jumpsuit"}
+
+
+def aspect_min(category: str | None) -> float:
+    if category is None:
+        return ASPECT_MIN["onepiece"]
+    if category in BOTTOMS:
+        return ASPECT_MIN["bottom"]
+    return ASPECT_MIN["onepiece"] if category in ONEPIECES else ASPECT_MIN["top"]
 
 
 @dataclass
@@ -84,8 +99,9 @@ def erode(mask: np.ndarray, px: int) -> np.ndarray:
 
 
 def check(photo: np.ndarray, target: np.ndarray, outer: np.ndarray | None, result: np.ndarray,
-          result_fg: np.ndarray | None = None, thresholds: dict | None = None) -> GateResult:
-    """photo: 원본 사진 RGB, target/outer: 원본 기준 마스크, result: 결과물 RGB."""
+          result_fg: np.ndarray | None = None, thresholds: dict | None = None,
+          category: str | None = None) -> GateResult:
+    """photo: 원본 사진 RGB, target/outer: 원본 기준 마스크, result: 결과물 RGB, category: 대상 옷 종류."""
     t = {**THRESHOLDS, **(thresholds or {})}
     s: dict = {}
     reasons: list[str] = []
@@ -103,6 +119,10 @@ def check(photo: np.ndarray, target: np.ndarray, outer: np.ndarray | None, resul
         reasons.append("옷이 여러 덩어리")
     if fg.sum() < 50:
         return GateResult(False, s, reasons or ["옷을 찾지 못함"])
+    ys, xs = np.nonzero(fg)
+    s["aspect"] = float((xs.max() - xs.min() + 1) / (ys.max() - ys.min() + 1))
+    if s["aspect"] < aspect_min(category):
+        reasons.append("펼친 옷 모양이 아님")
 
     margin = max(1, round(0.004 * max(photo.shape[:2])))
     photo_lab = srgb_to_lab(photo)
@@ -112,6 +132,9 @@ def check(photo: np.ndarray, target: np.ndarray, outer: np.ndarray | None, resul
     out_pal = palette(out_px)
     s["palette_dist"] = palette_distance(tgt_pal, out_pal)
     s["extra_color"] = palette_distance(out_pal, tgt_pal)
+    s["lightness_gap"] = float(abs(np.median(out_px[:, 0]) - np.median(tgt_px[:, 0])))
+    if s["lightness_gap"] > t["lightness_gap_max"]:
+        reasons.append("밝기가 크게 달라짐")
     tgt_c, out_c = float(np.median(chroma(tgt_px))), float(np.median(chroma(out_px)))
     s["target_chroma"], s["result_chroma"] = tgt_c, out_c
     s["chroma_ratio"] = out_c / max(tgt_c, 1e-6)
