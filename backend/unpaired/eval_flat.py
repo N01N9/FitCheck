@@ -65,6 +65,8 @@ def main(argv=None) -> None:
     p.add_argument("--n", type=int, default=200)
     p.add_argument("--k", type=int, default=2)
     p.add_argument("--out", required=True)
+    p.add_argument("--base", action="store_true", help="klein-base-4B 본체로 CFG 다단계 추론")
+    p.add_argument("--prompt-style", default="struct", help="학습 쌍과 같은 지시문 형식: struct / natural")
     args = p.parse_args(argv)
 
     from phase0.exp0_edit_models import disable_broken_cudnn
@@ -77,7 +79,7 @@ def main(argv=None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     cases = select(root, args.n)
     remover = BiRefNetRemover()
-    model = editors.load("klein", args.lora)
+    model = editors.load("klein", args.lora, base=args.base)
     rows = []
     for c in cases:
         photo = np.array(Image.open(root / "images" / f"{c['image']}.jpg").convert("RGB"))
@@ -86,7 +88,7 @@ def main(argv=None) -> None:
             continue
         cat = LABELS[c["label"]]
         if args.lora:
-            refs, prompt = pointer_refs(photo, mask), extract_prompt(cat, "flat")
+            refs, prompt = pointer_refs(photo, mask), extract_prompt(cat, "flat", args.prompt_style)
         else:
             refs, prompt = [fit(photo, 768)], ZS_PROMPT.format(cat=cat)
         results = model(refs, prompt, list(range(args.k)), (768, 768))

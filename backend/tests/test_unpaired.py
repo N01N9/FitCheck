@@ -523,3 +523,15 @@ def test_visible_ratio_ignores_scattered_side_pieces():
     visible[85:90, 85:90] = True
     r = visible_width_ratio(visible, torso)
     assert 0.12 < r < 0.16             # bbox 폭(1.0)이 아니라 면적 비율
+
+
+def test_natural_prompts_match_zero_shot_wording():
+    from unpaired.pairs import extract_prompt, peel_prompt
+    from unpaired.zeroshot import prompt_for
+
+    row = {"inner": {"category": "t-shirt"}, "outer": {"category": "jacket"}}
+    assert extract_prompt("t-shirt", "inner under jacket", "natural") == prompt_for("outline_dimcrop", row)
+    assert extract_prompt("t-shirt", "inner under jacket") == "[EXTRACT] t-shirt; layer=inner under jacket"
+    flat = extract_prompt("jeans", "flat", "natural")
+    assert "jeans" in flat and "green outline" in flat and "no person" in flat
+    assert peel_prompt("blazer", "natural").startswith("Remove the blazer") and peel_prompt("blazer") == "[PEEL] blazer"

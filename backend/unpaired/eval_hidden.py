@@ -58,6 +58,8 @@ def main(argv=None) -> None:
     p.add_argument("--cases", default="data/unpaired/eval/e_real_hidden")
     p.add_argument("--per-bin", type=int, default=30)
     p.add_argument("--out", required=True)
+    p.add_argument("--base", action="store_true", help="klein-base-4B 본체로 CFG 다단계 추론")
+    p.add_argument("--prompt-style", default="struct", help="학습 쌍과 같은 지시문 형식: struct / natural")
     args = p.parse_args(argv)
 
     from unpaired import editors
@@ -66,7 +68,7 @@ def main(argv=None) -> None:
     root, out = Path(args.cases), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     rows = pick([json.loads(line) for line in (root / "cases.jsonl").read_text().splitlines()], args.per_bin)
-    model = editors.load("klein", args.lora)
+    model = editors.load("klein", args.lora, base=args.base)
     dino = Dino()
     results = []
     for r in rows:
@@ -74,7 +76,7 @@ def main(argv=None) -> None:
         # 겉옷 벗기기: 학습 쌍(pairs.from_layer)과 같은 입력·크기
         ref = fit(outline(x, jacket), REF_LONG_SIDE)
         target = fit(orig, PEEL_LONG_SIDE)
-        peeled = np.array(model([ref], peel_prompt(r["donor_category"]), [0], target.size)[0].convert("RGB"))
+        peeled = np.array(model([ref], peel_prompt(r["donor_category"], args.prompt_style), [0], target.size)[0].convert("RGB"))
         size = target.size
         o = np.asarray(target)
         rec = {"id": r["id"], "share_bin": r["share_bin"], "category": r["category"],
@@ -84,8 +86,8 @@ def main(argv=None) -> None:
         Image.fromarray(peeled).save(out / f"{r['id']}_peel.jpg", quality=92)
         # 추출: 가린 사진 vs 원본
         layer = f"inner under {r['donor_category']}"
-        occl = model(pointer_refs(x, top & ~jacket), extract_prompt(r["category"], layer), [0], (768, 768))[0]
-        clean = model(pointer_refs(orig, top), extract_prompt(r["category"], "single"), [0], (768, 768))[0]
+        occl = model(pointer_refs(x, top & ~jacket), extract_prompt(r["category"], layer, args.prompt_style), [0], (768, 768))[0]
+        clean = model(pointer_refs(orig, top), extract_prompt(r["category"], "single", args.prompt_style), [0], (768, 768))[0]
         occl.save(out / f"{r['id']}_extract_occluded.png")
         clean.save(out / f"{r['id']}_extract_clean.png")
         e = dino([occl, clean])

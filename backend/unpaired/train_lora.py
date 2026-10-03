@@ -25,8 +25,8 @@ import numpy as np
 from PIL import Image
 
 from phase0.exp0_edit_models import KLEIN_ID, disable_broken_cudnn, require_free_memory
+from unpaired.editors import KLEIN_BASE_ID
 
-KLEIN_BASE_ID = "black-forest-labs/FLUX.2-klein-base-4B"
 # 이중 블록의 주의(attention) 투영 + 단일 블록의 묶음 투영. 단일 블록 to_out 은 Linear, 이중 블록은 to_out.0
 LORA_TARGETS = (r".*\.(to_q|to_k|to_v|to_out\.0|add_q_proj|add_k_proj|add_v_proj|to_add_out|to_qkv_mlp_proj)$"
                 r"|.*single_transformer_blocks\.\d+\.attn\.to_out$")

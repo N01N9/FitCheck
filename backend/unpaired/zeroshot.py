@@ -38,12 +38,14 @@ WHAT = {
 MARK_NOTE = " The green marks are only pointers; do not draw them."
 
 
-def prompt_for(variant: str, row: dict) -> str:
+def prompt_for(variant: str, row: dict, style: str = "struct") -> str:
     cat, outer = row["inner"]["category"], row["outer"]["category"]
     if variant == "lora":
         from unpaired.pairs import extract_prompt
 
-        return extract_prompt(cat, f"inner under {outer}")
+        return extract_prompt(cat, f"inner under {outer}", style)
+    if variant == "lora_natural":  # 증류 모델이 이미 아는 자연어 지시문(학습 없는 outline_dimcrop 과 같음)
+        variant = "outline_dimcrop"
     text = PRODUCT.format(what=WHAT[variant].format(cat=cat, outer=outer), outer=outer)
     return text if variant == "text" else text + MARK_NOTE
 
@@ -55,7 +57,8 @@ def select(index: Path, split: str, per_bin: int, include_exp0: bool) -> list[di
     return rows
 
 
-def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Path, ann: Annotations) -> None:
+def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Path, ann: Annotations,
+        style: str = "struct") -> None:
     import torch
 
     out.mkdir(parents=True, exist_ok=True)
@@ -72,7 +75,7 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
             if all(t.exists() for t in targets):
                 continue
             vdir.mkdir(parents=True, exist_ok=True)
-            if variant == "lora":
+            if variant.startswith("lora"):
                 from unpaired.pairs import pointer_refs
 
                 refs = pointer_refs(photo, inner)
@@ -81,7 +84,7 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
             refs[0].save(vdir / f"{stem}_in.jpg", quality=90)
             torch.cuda.synchronize()
             start = time.perf_counter()
-            images = model(refs, prompt_for(variant, row), list(range(k)), (size, size))
+            images = model(refs, prompt_for(variant, row, style), list(range(k)), (size, size))
             torch.cuda.synchronize()
             sec = time.perf_counter() - start
             for t, im in zip(targets, images):
@@ -107,15 +110,18 @@ def main(argv=None) -> None:
     p.add_argument("--out", required=True)
     p.add_argument("--lora", help="학습한 LoRA 폴더(klein 전용). 주면 변형은 lora 하나")
     p.add_argument("--tag", help="출력 폴더 이름(기본: 모델 이름)")
+    p.add_argument("--base", action="store_true", help="klein-base-4B 본체로 CFG 다단계 추론(LoRA 를 학습한 모델)")
+    p.add_argument("--lora-variants", default="lora", help='lora 일 때 변형: "lora"(학습 지시문), "lora_natural"(자연어)')
+    p.add_argument("--prompt-style", default="struct", help="lora 변형의 지시문 형식(학습 쌍과 같게): struct / natural")
     args = p.parse_args(argv)
 
     from unpaired import editors
 
     rows = select(Path(args.index), args.split, args.per_bin, args.include_exp0)
     ann = Annotations(Path(args.fashionpedia))
-    model = editors.load(args.model, args.lora)
-    variants = ["lora"] if args.lora else args.variants.split(",")
-    run(model, rows, variants, args.k, args.size, Path(args.out) / (args.tag or model.name), ann)
+    model = editors.load(args.model, args.lora, base=args.base)
+    variants = args.lora_variants.split(",") if args.lora else args.variants.split(",")
+    run(model, rows, variants, args.k, args.size, Path(args.out) / (args.tag or model.name), ann, args.prompt_style)
 
 
 if __name__ == "__main__":
