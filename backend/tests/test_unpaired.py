@@ -400,3 +400,23 @@ def test_gate_rejects_strip_and_lightness_flip():
     white[target] = (245, 245, 245)
     grey = product((110, 110, 110))
     assert "밝기가 크게 달라짐" in gates.check(white, target, None, grey).reasons
+
+
+def test_layer_check_rejects_redrawn_top_inside_jacket():
+    from unpaired.color import palette
+    from unpaired.engine import layer_check
+
+    solo = np.full((200, 160, 3), 200, np.uint8)
+    top = np.zeros((200, 160), bool)
+    top[40:160, 30:130] = True
+    solo[top] = (210, 30, 40)
+    prod = np.full((64, 64, 3), (20, 160, 60), np.uint8)
+    prod_pal = palette(srgb_to_lab_np(prod).reshape(-1, 3))
+    dressed = solo.copy()
+    jacket = np.zeros_like(top)
+    jacket[38:165, 25:55] = True
+    jacket[38:165, 105:135] = True
+    dressed[jacket] = (20, 160, 60)
+    dressed[60:150, 55:85] = (15, 15, 15)  # 상의 일부를 검정으로 바꿔 그림(겉옷 자리로 잡힌다)
+    check, _ = layer_check(solo, dressed, top, prod_pal)
+    assert "은행 겉옷에 없는 색" in check["reasons"]

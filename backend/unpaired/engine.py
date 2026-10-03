@@ -10,9 +10,13 @@
 생성 모델(klein-4B)은 사진 전체를 다시 그리므로, 바꾸려는 곳만 생성 결과에서 가져오고 나머지는
 원본 픽셀로 되돌린다. 그 뒤 자동 검사를 통과한 것만 승인한다. 시도·승인 수와 시간을 남겨 수율을 잰다.
 
+단독 상의 사진은 사람이 입은 것만 쓴다(evalsets.WORN_HINTS). 상품 컷에 겉옷을 입히라고 하면 klein 이
+사람을 새로 지어냈다(2026-10-03).
+
 사용 (컨테이너 안)
   python -m unpaired.engine swap --n 200 --out data/unpaired/engine/swap_pilot
   python -m unpaired.engine layer --n 200 --out data/unpaired/engine/layer_pilot
+  python -m unpaired.engine recheck --out data/unpaired/engine/layer_pilot   # 저장된 생성본으로 검사만 다시
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from PIL import Image
 from core.color import srgb_to_lab
 from unpaired.bank import load_usable
 from unpaired.color import delta_e2000, nearest, palette, palette_distance
+from unpaired.evalsets import WORN_HINTS
 from unpaired.gates import erode, fill_holes
 from unpaired.layered import Annotations, load
 from unpaired.masks import bbox
@@ -61,6 +66,7 @@ T = {
     "layer_cover_max": 0.92,
     "layer_face_max": 0.05,      # 상의 위쪽(얼굴 쪽)으로 번진 변화 비율
     "layer_palette_max": 15.0,   # 새 겉옷 색 → 은행 겉옷 색
+    "layer_foreign_max": 0.15,   # 겉옷 자리 픽셀 중 은행 겉옷 어느 색과도 먼(ΔE00>20) 비율. 크면 상의를 바꿔 그린 것
 }
 
 
@@ -166,12 +172,49 @@ def layer_check(orig: np.ndarray, gen: np.ndarray, top: np.ndarray, prod_pal) ->
     if s["face"] > T["layer_face_max"]:
         reasons.append("얼굴 쪽이 바뀜")
     if jacket.sum() > 50:
-        s["palette_dist"] = palette_distance(palette(g_lab[erode(jacket, 2)]), prod_pal)
+        px = g_lab[erode(jacket, 2)]
+        s["palette_dist"] = palette_distance(palette(px), prod_pal)
         if s["palette_dist"] > T["layer_palette_max"]:
             reasons.append("은행 겉옷 색이 아님")
+        if len(px) > 20000:
+            px = px[np.random.default_rng(0).choice(len(px), 20000, replace=False)]
+        s["foreign"] = float(np.mean(nearest(px, prod_pal[0]) > 20))
+        if s["foreign"] > T["layer_foreign_max"]:
+            reasons.append("은행 겉옷에 없는 색")
     else:
         reasons.append("겉옷 없음")
     return {"scores": s, "reasons": reasons}, jacket
+
+
+def worn(ann: Annotations, file: str) -> bool:
+    """하의·신발 주석이 같이 있으면 사람이 입은 사진으로 본다."""
+    return bool(WORN_HINTS & {a["category"] for a in ann.by_file.get(file, [])})
+
+
+def recheck(out: Path, ann: Annotations, bank: Path, index_dir: Path) -> dict:
+    """layer 시도를 저장된 생성본(raw/)으로 다시 검사한다. 이전 기록은 attempts_v0.jsonl 로 남긴다."""
+    index = {json.loads(line)["file"]: json.loads(line) for line in (index_dir / "solo_tops.jsonl").read_text().splitlines()}
+    path = out / "attempts.jsonl"
+    old = [json.loads(line) for line in path.read_text().splitlines() if line]
+    (out / "attempts_v0.jsonl").write_text(path.read_text())
+    new = []
+    for rec in old:
+        if rec["mode"] != "layer":
+            new.append(rec)
+            continue
+        stem = Path(rec["file"]).stem
+        photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
+        orig, (top,) = prepare(photo, [ann.mask(rec["file"], index[rec["file"]]["inner"]["ann_id"])])
+        if rec.get("base"):
+            orig = np.array(Image.open(rec["base"]).convert("RGB"))
+        gen = np.array(Image.open(out / "raw" / f"{stem}.jpg").convert("RGB").resize(orig.shape[1::-1]))
+        prod_img, prod_mask = product_pixels(bank, "front", rec["product"])
+        check, _ = layer_check(orig, gen, top, palette(srgb_to_lab(prod_img)[erode(prod_mask, 4)]))
+        if not worn(ann, rec["file"]):
+            check["reasons"].append("사람이 입은 사진 아님")
+        new.append({**rec, **check, "approved": not check["reasons"]})
+    path.write_text("".join(json.dumps(r, ensure_ascii=False, default=float) + "\n" for r in new))
+    return {"before": sum(r["approved"] for r in old), "after": sum(r["approved"] for r in new), "attempts": len(new)}
 
 
 def pick_products(bank_rows: list[dict], categories, key: str, n: int = 1) -> list[dict]:
@@ -181,7 +224,7 @@ def pick_products(bank_rows: list[dict], categories, key: str, n: int = 1) -> li
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="짝 데이터 엔진 (이너 교체 / 겉옷 덧입히기)")
-    p.add_argument("mode", choices=["swap", "swap_solo", "layer"])
+    p.add_argument("mode", choices=["swap", "swap_solo", "layer", "recheck"])
     p.add_argument("--n", type=int, default=200, help="시도 횟수")
     p.add_argument("--index-dir", default="data/unpaired/index")
     p.add_argument("--bank", default="data/unpaired/bank")
@@ -196,15 +239,18 @@ def main(argv=None) -> None:
     from unpaired import editors
 
     out = Path(args.out)
+    bank = Path(args.bank)
+    ann = Annotations(Path(args.fashionpedia))
+    if args.mode == "recheck":
+        print(json.dumps(recheck(out, ann, bank, Path(args.index_dir)), ensure_ascii=False))
+        return
     (out / "input").mkdir(parents=True, exist_ok=True)
     (out / "raw").mkdir(parents=True, exist_ok=True)
-    bank = Path(args.bank)
     bank_rows = load_usable(bank)
-    ann = Annotations(Path(args.fashionpedia))
     if args.mode == "swap":
         rows = load(Path(args.index_dir) / "layered.jsonl", "train")
     else:
-        rows = load(Path(args.index_dir) / "solo_tops.jsonl", "train")
+        rows = [r for r in load(Path(args.index_dir) / "solo_tops.jsonl", "train") if worn(ann, r["file"])]
     swapped = {}
     if args.from_swap:
         for rec in map(json.loads, (Path(args.from_swap) / "attempts.jsonl").read_text().splitlines()):
