@@ -35,7 +35,7 @@ EXP0_IMAGES = {
 
 # [시작, 끝) 버킷(0~99). 임계값 조정·체크포인트 선택·최종 보고용을 서로 떼어 둔다
 LAYERED_SPLITS = {"report": (0, 20), "select": (20, 25), "tune": (25, 30), "train": (30, 100)}
-SOLO_SPLITS = {"hidden_report": (0, 15), "hidden_tune": (15, 25), "train": (25, 100)}
+SOLO_SPLITS = {"hidden_report": (0, 25), "hidden_tune": (25, 35), "train": (35, 100)}
 
 MIN_INSIDE = 0.5        # 이너가 겉옷 볼록 껍질 안에 들어 있는 비율
 MIN_SOLO_AREA = 0.03    # 단독 상의가 사진에서 차지하는 최소 비율
@@ -152,26 +152,30 @@ def sample_by_bin(rows: list[dict], per_bin: int, bins=("lt15", "15_40", "40_70"
 
 
 class Annotations:
-    """Fashionpedia 상업 부분 주석에서 마스크를 꺼낸다."""
+    """Fashionpedia 상업 부분 주석에서 마스크를 꺼낸다.
+
+    train 과 val 의 주석 번호가 일부 겹치므로(80개) 항상 (사진 파일, 주석 번호) 로 찾는다.
+    """
 
     def __init__(self, fashionpedia: Path):
-        self.anns: dict[int, dict] = {}
+        self.anns: dict[tuple[str, int], dict] = {}
         self.by_file: dict[str, list[dict]] = {}
-        self.image_of: dict[int, dict] = {}  # 주석 id → 사진 정보
+        self.images: dict[str, dict] = {}
         for split in ("train", "val"):
             data = json.loads((fashionpedia / "commercial" / f"annotations_{split}.json").read_text())
             cat_name = {c["id"]: c["name"] for c in data["categories"]}
             images = {im["id"]: im for im in data["images"]}
             for a in data["annotations"]:
+                im = images[a["image_id"]]
                 a = {**a, "category": cat_name[a["category_id"]]}
-                self.anns[a["id"]] = a
-                self.image_of[a["id"]] = images[a["image_id"]]
-                self.by_file.setdefault(images[a["image_id"]]["file_name"], []).append(a)
+                self.images[im["file_name"]] = im
+                self.anns[(im["file_name"], a["id"])] = a
+                self.by_file.setdefault(im["file_name"], []).append(a)
         self.image_dir = fashionpedia / "commercial" / "images"
 
-    def mask(self, ann_id: int) -> np.ndarray:
-        im = self.image_of[ann_id]
-        return decode(self.anns[ann_id]["segmentation"], im["height"], im["width"])
+    def mask(self, file: str, ann_id: int) -> np.ndarray:
+        im = self.images[file]
+        return decode(self.anns[(file, ann_id)]["segmentation"], im["height"], im["width"])
 
     def garments(self, file: str, names=tuple(INNER) + tuple(OUTER) + ("pants", "shorts", "skirt", "dress", "jumpsuit")):
         """사진 속 옷 주석(검색 순위 비교용). 액세서리·신발은 뺀다."""

@@ -207,10 +207,11 @@ def main(argv=None) -> None:
         photo = np.array(Image.open(ann.image_dir / row["file"]).convert("RGB"))
         cat = row["inner"]["category"]
         if args.mode == "swap":
-            masks = [ann.mask(row["inner"]["ann_id"]), ann.mask(row["outer"]["ann_id"])]
+            masks = [ann.mask(row["file"], row["inner"]["ann_id"]),
+                     ann.mask(row["file"], row["outer"]["ann_id"])]
             cats = SWAP_CATEGORIES[cat]
         else:
-            masks = [ann.mask(row["inner"]["ann_id"])]
+            masks = [ann.mask(row["file"], row["inner"]["ann_id"])]
             cats = LAYER_CATEGORIES
         orig, masks = prepare(photo, masks)
         prod = pick_products(bank_rows, cats, row["file"])

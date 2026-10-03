@@ -245,3 +245,45 @@ def srgb_to_lab_np(img):
     from core.color import srgb_to_lab
 
     return srgb_to_lab(img)
+
+
+def test_annotations_are_keyed_by_file_because_ids_collide(tmp_path):
+    import json
+
+    from unpaired import layered
+
+    def coco(file, poly):
+        return {"categories": [{"id": 0, "name": "top, t-shirt, sweatshirt"}],
+                "images": [{"id": 1, "file_name": file, "width": 20, "height": 20}],
+                "annotations": [{"id": 7, "image_id": 1, "category_id": 0, "segmentation": [poly]}]}
+
+    (tmp_path / "commercial").mkdir()
+    (tmp_path / "commercial" / "annotations_train.json").write_text(json.dumps(coco("a.jpg", [0, 0, 9, 0, 9, 9, 0, 9])))
+    (tmp_path / "commercial" / "annotations_val.json").write_text(json.dumps(coco("b.jpg", [10, 10, 19, 10, 19, 19, 10, 19])))
+    ann = layered.Annotations(tmp_path)
+    assert ann.mask("a.jpg", 7)[2, 2] and not ann.mask("a.jpg", 7)[15, 15]
+    assert ann.mask("b.jpg", 7)[15, 15] and not ann.mask("b.jpg", 7)[2, 2]
+    assert callable(layered.main)
+
+
+def test_paste_occluder_fits_top_and_leaves_middle_visible():
+    from unpaired.evalsets import paste_occluder
+
+    photo = np.full((200, 160, 3), 200, np.uint8)
+    top = np.zeros((200, 160), bool)
+    top[60:140, 40:120] = True
+    src = np.zeros((300, 300, 3), np.uint8)
+    src[:] = (10, 10, 120)
+    outer = np.zeros((300, 300), bool)
+    outer[50:250, 50:130] = True
+    outer[50:250, 170:250] = True
+    inner = np.zeros((300, 300), bool)
+    inner[50:250, 130:170] = True
+    out, jacket = paste_occluder(photo, top, src, outer, inner, widen=1.1)
+    hidden = (top & jacket).sum() / top.sum()
+    assert 0.5 < hidden < 0.95
+    assert not jacket[100, 80]  # 가운데(열린 앞섶)로 상의가 보인다
+    from unpaired.engine import dilate
+
+    far = ~dilate(jacket, 3) & ~top  # 가장자리는 부드럽게 섞이므로 몇 픽셀 떨어진 곳만 본다
+    assert (out[far] == 200).all()

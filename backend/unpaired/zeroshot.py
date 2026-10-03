@@ -56,7 +56,8 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
     for i, row in enumerate(rows):
         stem = Path(row["file"]).stem
         photo = np.array(Image.open(ann.image_dir / row["file"]).convert("RGB"))
-        inner, outer = ann.mask(row["inner"]["ann_id"]), ann.mask(row["outer"]["ann_id"])
+        inner = ann.mask(row["file"], row["inner"]["ann_id"])
+        outer = ann.mask(row["file"], row["outer"]["ann_id"])
         for variant in variants:
             vdir = out / variant
             targets = [vdir / f"{stem}_k{j}.png" for j in range(k)]

@@ -117,9 +117,10 @@ def main(argv=None) -> None:
     for case in cases:
         stem = Path(case["file"]).stem
         photo = np.array(Image.open(ann.image_dir / case["file"]).convert("RGB"))
-        inner, outer = ann.mask(case["inner"]["ann_id"]), ann.mask(case["outer"]["ann_id"])
+        inner = ann.mask(case["file"], case["inner"]["ann_id"])
+        outer = ann.mask(case["file"], case["outer"]["ann_id"])
         others = [a for a in ann.garments(case["file"]) if a["id"] != case["inner"]["ann_id"]]
-        crops = [masked_crop(photo, inner)] + [masked_crop(photo, ann.mask(a["id"])) for a in others]
+        crops = [masked_crop(photo, inner)] + [masked_crop(photo, ann.mask(case["file"], a["id"])) for a in others]
         ref = dino(crops)
         for vdir in sorted(d for d in run.iterdir() if d.is_dir()):
             for path in sorted(vdir.glob(f"{stem}_k*.png")):
