@@ -376,3 +376,15 @@ def test_train_sampler_balances_sources():
     draw = sampler(pairs, {"swap": 3.0}, random.Random(0))
     counts = Counter(draw()["source"] for _ in range(4000))
     assert 0.7 < counts["swap"] / 4000 < 0.8  # 쌍 수와 상관없이 3:1
+
+
+def test_yield_summary():
+    from unpaired.yields import summarize
+
+    a = [{"approved": True, "seconds": 8.0, "reasons": [], "share_bin": "lt15", "product_category": "t-shirt"},
+         {"approved": False, "seconds": 8.0, "reasons": ["겉옷이 바뀜"], "share_bin": "lt15", "product_category": "t-shirt"},
+         {"approved": True, "seconds": 10.0, "reasons": [], "share_bin": "15_40", "product_category": "shirt"}]
+    s = summarize(a)
+    assert s["approval_rate"] == round(2 / 3, 3) and s["gpu_seconds_per_approved"] == 13.0
+    assert s["reasons"] == {"겉옷이 바뀜": 1} and s["approval_by_share_bin"] == {"lt15": 0.5, "15_40": 1.0}
+    assert s["approval_by_product"] == {"t-shirt": "1/2", "shirt": "1/1"}
