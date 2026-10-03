@@ -1,9 +1,11 @@
 """데이터 엔진: 정답은 실제 데이터로 고정하고, 입력 사진을 거꾸로 만든다(짝 데이터 없이 학습 쌍 만들기).
 
-  swap   겹쳐 입은 실제 사진(Fashionpedia)의 이너만 은행 상품 P 로 바꾼다.
-         정답 = P(실제 상품 사진). 겉옷·사람·배경은 실제 그대로
-  layer  상의가 다 보이는 실제 사진에 은행 겉옷 O 를 덧입힌다.
-         정답 = 원본 사진(겉옷 벗기기) / 원본 상의(이너 추출) / O(겉옷 추출)
+  swap       겹쳐 입은 실제 사진(Fashionpedia)의 이너만 은행 상품 P 로 바꾼다.
+             정답 = P(실제 상품 사진). 겉옷·사람·배경은 실제 그대로
+  swap_solo  겉옷 없이 상의만 입은 실제 사진의 상의를 P 로 바꾼다 (단일 옷 교체, 정답 = P)
+  layer      상의가 다 보이는 실제 사진에 은행 겉옷 O 를 덧입힌다.
+             정답 = 원본 사진(겉옷 벗기기) / O(겉옷 추출)
+             --from-swap 으로 swap_solo 결과 위에 덧입히면 이너 정답 P 까지 실제 사진으로 생긴다
 
 생성 모델(klein-4B)은 사진 전체를 다시 그리므로, 바꾸려는 곳만 생성 결과에서 가져오고 나머지는
 원본 픽셀로 되돌린다. 그 뒤 자동 검사를 통과한 것만 승인한다. 시도·승인 수와 시간을 남겨 수율을 잰다.
@@ -35,6 +37,9 @@ from unpaired.masks import bbox
 SWAP_PROMPT = ("Image 1 shows a person wearing a {cat} under a {outer}. Replace only the {cat} with the garment from "
                "image 2: the same garment with its exact colors, pattern and print. Keep the {outer}, the person, face, "
                "hair, hands, pose, the other clothes and the background exactly the same.")
+SWAP_SOLO_PROMPT = ("Replace the {cat} the person in image 1 is wearing with the garment from image 2: the same "
+                    "garment with its exact colors, pattern and print. Keep the person, face, hair, hands, pose, the "
+                    "other clothes and the background exactly the same.")
 LAYER_PROMPT = ("Dress the person in image 1 in the {outer} from image 2, worn open and unbuttoned over their {cat} so "
                 "the {cat} stays visible down the middle. Keep the person, face, hair, pose, the {cat}, the other "
                 "clothes and the background exactly the same.")
@@ -109,7 +114,7 @@ def product_pixels(bank: Path, view: str, item: str):
     return img, mask
 
 
-def swap_check(orig: np.ndarray, gen: np.ndarray, inner: np.ndarray, outer: np.ndarray, prod_pal) -> dict:
+def swap_check(orig: np.ndarray, gen: np.ndarray, inner: np.ndarray, outer: np.ndarray | None, prod_pal) -> dict:
     o_lab, g_lab = srgb_to_lab(orig), srgb_to_lab(gen)
     margin = max(1, round(0.004 * max(orig.shape[:2])))
     core = erode(inner, margin)
@@ -120,7 +125,9 @@ def swap_check(orig: np.ndarray, gen: np.ndarray, inner: np.ndarray, outer: np.n
     s["old_vs_prod"] = palette_distance(old_pal, prod_pal)
     px = g_lab[core]
     s["leak"] = float(np.mean(nearest(px, old_pal[0]) + 3.0 < nearest(px, prod_pal[0])))
-    ring = dilate(inner, 3 * margin) & ~dilate(inner, margin) & outer
+    ring = dilate(inner, 3 * margin) & ~dilate(inner, margin)
+    if outer is not None:
+        ring &= outer
     s["ring"] = float(np.median(delta_e2000(o_lab[ring], g_lab[ring]))) if ring.sum() > 20 else 0.0
     reasons = []
     same = s["old_vs_prod"] < 8
@@ -174,13 +181,14 @@ def pick_products(bank_rows: list[dict], categories, key: str, n: int = 1) -> li
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="짝 데이터 엔진 (이너 교체 / 겉옷 덧입히기)")
-    p.add_argument("mode", choices=["swap", "layer"])
+    p.add_argument("mode", choices=["swap", "swap_solo", "layer"])
     p.add_argument("--n", type=int, default=200, help="시도 횟수")
     p.add_argument("--index-dir", default="data/unpaired/index")
     p.add_argument("--bank", default="data/unpaired/bank")
     p.add_argument("--fashionpedia", default="data/fashionpedia")
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--from-swap", help="layer: swap_solo 출력 폴더. 승인된 교체 사진 위에 겉옷을 덧입힌다")
     args = p.parse_args(argv)
 
     import torch
@@ -197,6 +205,12 @@ def main(argv=None) -> None:
         rows = load(Path(args.index_dir) / "layered.jsonl", "train")
     else:
         rows = load(Path(args.index_dir) / "solo_tops.jsonl", "train")
+    swapped = {}
+    if args.from_swap:
+        for rec in map(json.loads, (Path(args.from_swap) / "attempts.jsonl").read_text().splitlines()):
+            if rec["approved"]:
+                swapped[rec["file"]] = rec
+        rows = [r for r in rows if r["file"] in swapped]
     rows.sort(key=lambda r: h01(args.mode + r["file"]))
     rows = rows[: args.n]
     model = editors.load("klein")
@@ -211,10 +225,19 @@ def main(argv=None) -> None:
             masks = [ann.mask(row["file"], row["inner"]["ann_id"]),
                      ann.mask(row["file"], row["outer"]["ann_id"])]
             cats = SWAP_CATEGORIES[cat]
+        elif args.mode == "swap_solo":
+            masks = [ann.mask(row["file"], row["inner"]["ann_id"])]
+            cats = SWAP_CATEGORIES[cat]
         else:
             masks = [ann.mask(row["file"], row["inner"]["ann_id"])]
             cats = LAYER_CATEGORIES
         orig, masks = prepare(photo, masks)
+        stem = Path(row["file"]).stem
+        inner_product = None
+        if args.mode == "layer" and args.from_swap:
+            # 교체한 사진이 새 원본이 된다(크기는 prepare 와 같다)
+            orig = np.array(Image.open(Path(args.from_swap) / "input" / f"{stem}.jpg").convert("RGB"))
+            inner_product = swapped[row["file"]]["product"]
         prod = pick_products(bank_rows, cats, row["file"])
         if not prod:
             continue
@@ -222,27 +245,30 @@ def main(argv=None) -> None:
         prod_img, prod_mask = product_pixels(bank, prod["view"], prod["item"])
         prod_pal = palette(srgb_to_lab(prod_img)[erode(prod_mask, 4)])
         outer_name = row["outer"]["category"] if args.mode == "swap" else prod["category"]
-        prompt = (SWAP_PROMPT if args.mode == "swap" else LAYER_PROMPT).format(cat=cat, outer=outer_name)
+        template = {"swap": SWAP_PROMPT, "swap_solo": SWAP_SOLO_PROMPT, "layer": LAYER_PROMPT}[args.mode]
+        prompt = template.format(cat=cat, outer=outer_name)
         torch.cuda.synchronize()
         start = time.perf_counter()
         gen = model([Image.fromarray(orig), Image.fromarray(prod_img)], prompt, [args.seed], orig.shape[1::-1])[0]
         torch.cuda.synchronize()
         sec = time.perf_counter() - start
         gen = np.array(gen.convert("RGB").resize(orig.shape[1::-1]))
-        stem = Path(row["file"]).stem
         Image.fromarray(gen).save(out / "raw" / f"{stem}.jpg", quality=92)
-        if args.mode == "swap":
-            inner, outer = masks
+        if args.mode in ("swap", "swap_solo"):
+            inner, outer = masks if args.mode == "swap" else (masks[0], None)
             px = max(2, round(0.01 * max(orig.shape[:2])))
             region = dilate(inner, px)
             x = composite(orig, gen, feather(region, px))
             check = swap_check(orig, x, inner, outer, prod_pal)
-            extra = {"inner_share": row["inner_share"], "share_bin": row["share_bin"]}
+            extra = {"inner_share": row["inner_share"], "share_bin": row["share_bin"]} if outer is not None else {}
         else:
             check, jacket = layer_check(orig, gen, masks[0], prod_pal)
             x = composite(orig, gen, feather(dilate(jacket, 2), 3))
             Image.fromarray((jacket * 255).astype(np.uint8)).save(out / "input" / f"{stem}_jacket.png")
             extra = {}
+            if inner_product:
+                extra = {"inner_product": inner_product, "base": str(Path(args.from_swap) / "input" / f"{stem}.jpg"),
+                         "inner_product_category": swapped[row["file"]]["product_category"]}
         Image.fromarray(x).save(out / "input" / f"{stem}.jpg", quality=95)
         rec = {"file": row["file"], "mode": args.mode, "inner_category": cat, "product": prod["item"],
                "product_category": prod["category"], "seconds": round(sec, 1), "size": orig.shape[1::-1],

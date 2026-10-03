@@ -3,6 +3,7 @@
   swap      [EXTRACT] 사진 전체 + 이너 외곽선, 이너 크롭(밖은 어둡게)  → 은행 상품 P
   layer     [PEEL]    사진 전체 + 겉옷 외곽선                        → 원본 사진
             [EXTRACT] 사진 전체 + 겉옷 외곽선, 겉옷 크롭              → 은행 겉옷 O
+            [EXTRACT] 이너가 은행 상품이면(swap_solo 위에 덧입힘) 이너 외곽선 → 은행 상품 P
   flatlay   [EXTRACT] 장면 + 대상 외곽선, 대상 크롭                   → 은행 상품
   identity  [EXTRACT] 상품 사진 자체 + 외곽선                         → 같은 상품 사진
 
@@ -93,7 +94,9 @@ def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index:
         stem = Path(rec["file"]).stem
         row = index[rec["file"]]
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
-        orig, _ = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])])
+        orig, (top,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])])
+        if rec.get("base"):  # swap_solo 로 상의를 바꾼 사진 위에 덧입힌 경우, 그 사진이 벗기기 정답
+            orig = np.array(Image.open(rec["base"]).convert("RGB"))
         x = np.array(Image.open(engine_dir / "input" / f"{stem}.jpg").convert("RGB"))
         jacket = np.asarray(Image.open(engine_dir / "input" / f"{stem}_jacket.png")) > 127
         peel_target = fit(orig, PEEL_LONG_SIDE)
@@ -102,6 +105,10 @@ def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index:
         w.add(f"outer_{stem}", pointer_refs(x, jacket), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], "outer"), EXTRACT_SIZE,
               {"source": "layer_outer", "product": rec["product"]})
+        if rec.get("inner_product"):  # 이너도 은행 상품이므로 실제 정답이 있다
+            w.add(f"inner_{stem}", pointer_refs(x, top & ~jacket), str(bank / "front" / f"{rec['inner_product']}.jpg"),
+                  extract_prompt(rec["inner_product_category"], f"inner under {rec['product_category']}"),
+                  EXTRACT_SIZE, {"source": "layer_inner", "product": rec["inner_product"]})
 
 
 def from_flatlay(w: Writer, flat_dir: Path, bank: Path) -> None:
