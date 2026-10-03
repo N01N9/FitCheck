@@ -24,6 +24,7 @@ from unpaired.bank import load_usable
 from unpaired.engine import prepare, stem_of
 from unpaired.layered import Annotations
 from unpaired.pointer import dim_crop, outline
+from unpaired.weights import extract_weights, peel_weights, visible_width_ratio
 
 EXTRACT_SIZE = (768, 768)
 PEEL_LONG_SIDE = 768
@@ -47,10 +48,12 @@ def fit(img: np.ndarray, long_side: int) -> Image.Image:
 
 
 class Writer:
-    def __init__(self, out: Path):
+    def __init__(self, out: Path, hidden_weights: bool = False):
         self.out = out
+        self.hidden_weights = hidden_weights  # 가려졌던 곳의 무늬·글자는 채점하지 않는 가중치(unpaired.weights)
         (out / "refs").mkdir(parents=True, exist_ok=True)
         (out / "targets").mkdir(parents=True, exist_ok=True)
+        (out / "weights").mkdir(parents=True, exist_ok=True)
         self.fh = (out / "pairs.jsonl").open("a")
         self.n = 0
         self.seen: set[str] = set()
@@ -72,6 +75,22 @@ class Writer:
                                   "size": list(size), **meta}, ensure_ascii=False) + "\n")
         self.n += 1
 
+    def weight(self, pid: str, image: Image.Image) -> dict:
+        """가중치 이미지를 저장하고 쌍에 붙일 meta 를 돌려준다. 옵션이 꺼져 있으면 빈 dict."""
+        if not self.hidden_weights:
+            return {}
+        path = self.out / "weights" / f"{pid}.png"
+        image.save(path)
+        return {"weight": str(path)}
+
+
+def product_weight(w: Writer, pid: str, bank: Path, item: str, visible: np.ndarray, torso: np.ndarray) -> dict:
+    if not w.hidden_weights:
+        return {}
+    img = np.array(Image.open(bank / "front" / f"{item}.jpg").convert("RGB"))
+    mask = np.asarray(Image.open(bank / "front_mask" / f"{item}.png")) > 127
+    return w.weight(pid, extract_weights(img, mask, visible_width_ratio(visible, torso), EXTRACT_SIZE))
+
 
 def pointer_refs(img: np.ndarray, mask: np.ndarray) -> list[Image.Image]:
     """참조 1: 사진 전체 + 외곽선, 참조 2: 대상 주변 크롭(대상 밖 어둡게)."""
@@ -89,9 +108,15 @@ def from_swap(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: 
         solo = "outer" not in row  # swap_solo: 겉옷 없이 다 보이는 상의를 바꾼 것
         layer = "single" if solo else f"inner under {row['outer']['category']}"
         source = "swap_solo" if solo else "swap"
-        w.add(f"{source}_{engine_dir.name}_{stem_of(rec)}", pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
+        pid = f"{source}_{engine_dir.name}_{stem_of(rec)}"
+        weight = {}
+        if not solo:  # 겉옷 아래 이너만 가려진 곳이 있다
+            _, (_, outer) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"]),
+                                            ann.mask(rec["file"], row["outer"]["ann_id"])], rec.get("max_side", 1024))
+            weight = product_weight(w, pid, bank, rec["product"], inner, inner | outer)
+        w.add(pid, pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], layer), EXTRACT_SIZE,
-              {"source": source, "share_bin": rec.get("share_bin"), "product": rec["product"]})
+              {"source": source, "share_bin": rec.get("share_bin"), "product": rec["product"], **weight})
 
 
 def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: dict[str, dict]) -> None:
@@ -107,15 +132,22 @@ def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index:
         x = np.array(Image.open(engine_dir / "input" / f"{stem}.jpg").convert("RGB"))
         jacket = np.asarray(Image.open(engine_dir / "input" / f"{stem}_jacket.png")) > 127
         peel_target = fit(orig, PEEL_LONG_SIDE)
-        w.add(f"peel_{engine_dir.name}_{stem}", [fit(outline(x, jacket), REF_LONG_SIDE)], peel_target, peel_prompt(rec["product_category"]),
-              peel_target.size, {"source": "layer_peel"})
+        pid = f"peel_{engine_dir.name}_{stem}"
+        weight = {}
+        if w.hidden_weights:
+            hidden = np.asarray(Image.fromarray(jacket.astype(np.uint8) * 255).resize(peel_target.size, Image.NEAREST)) > 127
+            weight = w.weight(pid, peel_weights(np.asarray(peel_target), hidden))
+        w.add(pid, [fit(outline(x, jacket), REF_LONG_SIDE)], peel_target, peel_prompt(rec["product_category"]),
+              peel_target.size, {"source": "layer_peel", **weight})
         w.add(f"outer_{engine_dir.name}_{stem}", pointer_refs(x, jacket), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], "outer"), EXTRACT_SIZE,
               {"source": "layer_outer", "product": rec["product"]})
         if rec.get("inner_product"):  # 이너도 은행 상품이므로 실제 정답이 있다
-            w.add(f"inner_{engine_dir.name}_{stem}", pointer_refs(x, top & ~jacket), str(bank / "front" / f"{rec['inner_product']}.jpg"),
+            pid = f"inner_{engine_dir.name}_{stem}"
+            weight = product_weight(w, pid, bank, rec["inner_product"], top & ~jacket, top | jacket)
+            w.add(pid, pointer_refs(x, top & ~jacket), str(bank / "front" / f"{rec['inner_product']}.jpg"),
                   extract_prompt(rec["inner_product_category"], f"inner under {rec['product_category']}"),
-                  EXTRACT_SIZE, {"source": "layer_inner", "product": rec["inner_product"]})
+                  EXTRACT_SIZE, {"source": "layer_inner", "product": rec["inner_product"], **weight})
 
 
 def from_flatlay(w: Writer, flat_dir: Path, bank: Path) -> None:
@@ -152,9 +184,10 @@ def main(argv=None) -> None:
     p.add_argument("--bank", default="data/unpaired/bank")
     p.add_argument("--index-dir", default="data/unpaired/index")
     p.add_argument("--fashionpedia", default="data/fashionpedia")
+    p.add_argument("--hidden-weights", action="store_true", help="가려졌던 곳의 무늬·글자는 채점하지 않는 가중치를 붙인다")
     args = p.parse_args(argv)
 
-    w = Writer(Path(args.out))
+    w = Writer(Path(args.out), args.hidden_weights)
     bank = Path(args.bank)
     if args.swap or args.layer:
         ann = Annotations(Path(args.fashionpedia))

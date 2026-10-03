@@ -488,3 +488,38 @@ def test_eval_flat_select_balances_labels_and_largest_component(tmp_path):
     m[1:3, 1:3] = True
     m[10:18, 10:18] = True
     assert largest(m).sum() == 64
+
+
+def test_hidden_weights_zero_on_hidden_print_but_not_on_plain_or_edges():
+    from unpaired.weights import PLAIN_WEIGHT, extract_weights, peel_weights
+
+    img = np.full((768, 768, 3), 255, np.uint8)
+    mask = np.zeros((768, 768), bool)
+    mask[100:700, 150:620] = True
+    img[mask] = (40, 60, 160)
+    yy, xx = np.mgrid[0:768, 0:768]
+    checker = ((yy // 6 + xx // 6) % 2 == 0) & mask & (xx < 300)   # 왼쪽(가려질 곳)에 잔무늬
+    img[checker] = (240, 240, 240)
+    w = np.asarray(extract_weights(img, mask, ratio=0.3)).astype(float) / 255
+    assert w[400, 385] == 1.0                      # 가운데 보이는 띠
+    assert w[400, 200] == 0.0                      # 가려진 잔무늬
+    assert abs(w[400, 560] - PLAIN_WEIGHT) < 0.01  # 가려진 무지
+    assert abs(w[400, 615] - PLAIN_WEIGHT) < 0.01 or w[400, 615] == 1.0  # 오른쪽 테두리는 0 이 아니다
+    assert w[30, 30] == 1.0                        # 배경
+    hidden = np.zeros((768, 768), bool)
+    hidden[:, :300] = True
+    pw = np.asarray(peel_weights(img, hidden)).astype(float) / 255
+    assert pw[400, 200] == 0.0 and pw[400, 500] == 1.0
+
+
+def test_visible_ratio_ignores_scattered_side_pieces():
+    from unpaired.weights import visible_width_ratio
+
+    torso = np.zeros((100, 100), bool)
+    torso[10:90, 10:90] = True
+    visible = np.zeros_like(torso)
+    visible[10:90, 45:55] = True       # 가운데 띠
+    visible[85:90, 10:15] = True       # 옆구리 밑단 조각
+    visible[85:90, 85:90] = True
+    r = visible_width_ratio(visible, torso)
+    assert 0.12 < r < 0.16             # bbox 폭(1.0)이 아니라 면적 비율
