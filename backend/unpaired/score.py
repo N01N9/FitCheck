@@ -36,6 +36,14 @@ COLOR_OK = 12.0   # 대상의 보이는 색 → 결과물 팔레트 거리(ΔE00
 EXTRA_OK = 15.0   # 결과물 색 → 대상 색. 크면 대상에 없던 색(대개 겉옷 색)이 많다
 OUTER_OK = 0.2    # 결과물 중 겉옷 색에 더 가까운 픽셀 비율
 MARKER_OK = 0.01  # 결과물 옷 픽셀 중 표시용 초록에 가까운 비율
+# D-HARD: 그래픽·글자·무늬가 있어 "무지로 단정"하거나 지어내기 쉬운 옷(Fashionpedia 무늬 속성)
+HARD_PATTERNS = {"letters, numbers", "cartoon", "abstract", "geometric", "floral", "camouflage", "animal",
+                 "paisley", "plant", "stripe", "check", "dot"}
+
+
+def is_hard(case: dict) -> bool:
+    patterns = set(case["inner"]["attributes"].get("textile pattern", []))
+    return bool(patterns & HARD_PATTERNS)
 
 
 def marker_fraction(result: np.ndarray, fg: np.ndarray | None = None) -> float:
@@ -105,7 +113,7 @@ def summarize(rows: list[dict]) -> dict:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
         r["correct"], r["correct_color"] = right_item(r), faithful(r)
-        for b in (r["share_bin"], "all"):
+        for b in (r["share_bin"], "all") + (("hard",) if r.get("hard") else ()):
             groups[(r["variant"], b, r["file"])].append(r)
     table: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     for (variant, b, _), items in groups.items():
@@ -178,7 +186,8 @@ def main(argv=None) -> None:
                 margin = float(sims[0] - sims[1:].max()) if len(sims) > 1 else 1.0
                 outer_pos = next((i + 1 for i, a in enumerate(others) if a["id"] == case["outer"]["ann_id"]), None)
                 rows.append({"file": case["file"], "variant": vdir.name, "k": int(path.stem.rsplit("_k", 1)[1]),
-                             "share_bin": case["share_bin"], "passed": g.passed, "reasons": g.reasons,
+                             "share_bin": case["share_bin"], "hard": is_hard(case), "passed": g.passed,
+                             "reasons": g.reasons,
                              "scores": g.scores, "gate_score": gates.score(g),
                              "sim_target": round(float(sims[0]), 4),
                              "sim_outer": round(float(sims[outer_pos]), 4) if outer_pos else None,
