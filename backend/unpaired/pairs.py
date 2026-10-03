@@ -1,6 +1,6 @@
 """데이터 엔진·합성기가 승인한 결과를 LoRA 학습 쌍(train_lora 의 jsonl)으로 바꾼다.
 
-  swap      [EXTRACT] 사진 전체 + 이너 외곽선, 이너 크롭(밖은 어둡게)  → 은행 상품 P
+  swap      [EXTRACT] 사진 전체 + 이너 외곽선, 이너 크롭(밖은 어둡게)  → 은행 상품 P (swap_solo 도 같은 형식)
   layer     [PEEL]    사진 전체 + 겉옷 외곽선                        → 원본 사진
             [EXTRACT] 사진 전체 + 겉옷 외곽선, 겉옷 크롭              → 은행 겉옷 O
             [EXTRACT] 이너가 은행 상품이면(swap_solo 위에 덧입힘) 이너 외곽선 → 은행 상품 P
@@ -81,10 +81,12 @@ def from_swap(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: 
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
         _, (inner,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])])
         x = np.array(Image.open(engine_dir / "input" / f"{Path(rec['file']).stem}.jpg").convert("RGB"))
-        layer = f"inner under {row['outer']['category']}"
-        w.add(f"swap_{Path(rec['file']).stem}", pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
+        solo = "outer" not in row  # swap_solo: 겉옷 없이 다 보이는 상의를 바꾼 것
+        layer = "single" if solo else f"inner under {row['outer']['category']}"
+        source = "swap_solo" if solo else "swap"
+        w.add(f"{source}_{Path(rec['file']).stem}", pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], layer), EXTRACT_SIZE,
-              {"source": "swap", "share_bin": rec.get("share_bin"), "product": rec["product"]})
+              {"source": source, "share_bin": rec.get("share_bin"), "product": rec["product"]})
 
 
 def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: dict[str, dict]) -> None:

@@ -151,12 +151,35 @@ def benchmark(trainer: Trainer, out: Path) -> list[dict]:
     return rows
 
 
-def train(trainer: Trainer, pairs: list[dict], steps: int, out: Path, save_every: int, seed: int) -> None:
+def parse_weights(text: str | None) -> dict[str, float]:
+    """"swap=3,flatlay=1" → {"swap": 3.0, "flatlay": 1.0}. 비우면 모든 출처 1."""
+    if not text:
+        return {}
+    return {k: float(v) for k, v in (item.split("=") for item in text.split(","))}
+
+
+def sampler(pairs: list[dict], weights: dict[str, float], rng: random.Random):
+    """출처를 먼저 가중치로 고르고, 그 안에서 쌍을 고른다(수가 많은 출처가 학습을 다 차지하지 않게)."""
+    by_source: dict[str, list[dict]] = {}
+    for pair in pairs:
+        by_source.setdefault(pair.get("source", "?"), []).append(pair)
+    names = sorted(by_source)
+    w = [weights.get(n, 1.0) for n in names]
+
+    def draw() -> dict:
+        return rng.choice(by_source[rng.choices(names, weights=w)[0]])
+
+    return draw
+
+
+def train(trainer: Trainer, pairs: list[dict], steps: int, out: Path, save_every: int, seed: int,
+          weights: dict[str, float] | None = None) -> None:
     rng = random.Random(seed)
+    draw = sampler(pairs, weights or {}, rng)
     log = (out / "train_log.jsonl").open("a")
     start = time.perf_counter()
     for step in range(1, steps + 1):
-        pair = rng.choice(pairs)
+        pair = draw()
         size = tuple(pair["size"])
         target = trainer.encode_image(Image.open(pair["target"]), size)
         refs = [trainer.encode_image(Image.open(r), _ref_size(Image.open(r))) for r in pair["refs"]]
@@ -186,6 +209,7 @@ def main(argv=None) -> None:
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--save-every", type=int, default=500)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--source-weights", help='출처별 표집 비율, 예: "swap=3,flatlay=1"')
     args = p.parse_args(argv)
 
     disable_broken_cudnn()
@@ -198,7 +222,7 @@ def main(argv=None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     pairs = [json.loads(line) for line in Path(args.pairs).read_text().splitlines() if line]
     (out / "config.json").write_text(json.dumps(vars(args), indent=2))
-    train(trainer, pairs, args.steps, out, args.save_every, args.seed)
+    train(trainer, pairs, args.steps, out, args.save_every, args.seed, parse_weights(args.source_weights))
 
 
 if __name__ == "__main__":

@@ -363,3 +363,16 @@ def test_pairs_from_flatlay_writes_refs_and_real_targets(tmp_path):
     assert len(rows) == 1 and rows[0]["prompt"] == "[EXTRACT] t-shirt; layer=flat"
     assert rows[0]["target"].endswith("bank/front/a.jpg") and len(rows[0]["refs"]) == 2
     assert all(Path(r).exists() for r in rows[0]["refs"])
+
+
+def test_train_sampler_balances_sources():
+    import random
+    from collections import Counter
+
+    from unpaired.train_lora import parse_weights, sampler
+
+    pairs = [{"source": "flatlay", "id": i} for i in range(1000)] + [{"source": "swap", "id": i} for i in range(10)]
+    assert parse_weights("swap=3,flatlay=1") == {"swap": 3.0, "flatlay": 1.0} and parse_weights(None) == {}
+    draw = sampler(pairs, {"swap": 3.0}, random.Random(0))
+    counts = Counter(draw()["source"] for _ in range(4000))
+    assert 0.7 < counts["swap"] / 4000 < 0.8  # 쌍 수와 상관없이 3:1
