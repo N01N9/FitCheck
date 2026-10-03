@@ -103,7 +103,7 @@ class Trainer:
         torch.nn.utils.clip_grad_norm_(self.params, 1.0)
         self.opt.step()
         self.opt.zero_grad(set_to_none=True)
-        return float(loss)
+        return float(loss.detach())
 
     def save(self, path: Path) -> None:
         from diffusers import Flux2KleinPipeline
