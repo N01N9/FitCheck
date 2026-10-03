@@ -420,3 +420,15 @@ def test_layer_check_rejects_redrawn_top_inside_jacket():
     dressed[60:150, 55:85] = (15, 15, 15)  # 상의 일부를 검정으로 바꿔 그림(겉옷 자리로 잡힌다)
     check, _ = layer_check(solo, dressed, top, prod_pal)
     assert "은행 겉옷에 없는 색" in check["reasons"]
+
+
+def test_eval_hidden_pick_and_region_de():
+    from unpaired.eval_hidden import pick, region_de
+
+    rows = [{"id": f"{b}{i}", "share_bin": b} for b in ("lt15", "15_40", "40_70", "ge70") for i in range(5)]
+    got = pick(rows, 2)
+    assert len(got) == 6 and {r["share_bin"] for r in got} == {"lt15", "15_40", "40_70"}
+    a = np.full((10, 10, 3), 100, np.uint8)
+    m = np.zeros((10, 10), bool)
+    m[2:5, 2:5] = True
+    assert region_de(a, a, m) == 0.0 and region_de(a, a, np.zeros_like(m)) != region_de(a, a, np.zeros_like(m))
