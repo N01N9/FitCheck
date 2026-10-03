@@ -474,3 +474,17 @@ def test_pairs_writer_refuses_duplicate_ids(tmp_path):
     w.add("a", [img], img, "p", (32, 32), {})
     with pytest.raises(ValueError):
         w.add("a", [img], img, "p", (32, 32), {})
+
+
+def test_eval_flat_select_balances_labels_and_largest_component(tmp_path):
+    from unpaired.eval_flat import largest, select
+
+    lines = ["image,sender_id,label,kids"] + [f"t{i},1,T-Shirt,False" for i in range(10)] + \
+            [f"p{i},1,Pants,False" for i in range(10)] + ["s1,1,Shoes,False", "k1,1,Dress,True"]
+    (tmp_path / "images.csv").write_text("\n".join(lines))
+    got = select(tmp_path, 6)
+    assert len(got) == 6 and {r["label"] for r in got} == {"T-Shirt", "Pants"}
+    m = np.zeros((20, 20), bool)
+    m[1:3, 1:3] = True
+    m[10:18, 10:18] = True
+    assert largest(m).sum() == 64
