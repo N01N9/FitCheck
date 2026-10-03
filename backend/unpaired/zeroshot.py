@@ -3,8 +3,12 @@
 대상 표시 방식(pointer.VARIANTS)마다 시드 K개로 K장을 만든다. 채점은 unpaired.score 가 따로 한다.
 이미 만든 결과는 건너뛰므로 끊겨도 같은 명령으로 이어서 돌릴 수 있다.
 
+학습한 LoRA 는 --lora 로 얹는다. 이때 변형은 "lora" 하나이고, 표시·지시문을 학습 쌍(unpaired.pairs)과
+똑같이 만든다(사진 전체 + 외곽선, 대상 크롭 / "[EXTRACT] t-shirt; layer=inner under jacket").
+
 사용 (컨테이너 안)
   python -m unpaired.zeroshot --model klein --per-bin 4 --include-exp0 --k 4 --out results/unpaired/zs_pilot
+  python -m unpaired.zeroshot --model klein --lora runs/lora1/step01500 --tag lora1 --per-bin 20 --out results/unpaired/eval
 """
 
 from __future__ import annotations
@@ -36,6 +40,10 @@ MARK_NOTE = " The green marks are only pointers; do not draw them."
 
 def prompt_for(variant: str, row: dict) -> str:
     cat, outer = row["inner"]["category"], row["outer"]["category"]
+    if variant == "lora":
+        from unpaired.pairs import extract_prompt
+
+        return extract_prompt(cat, f"inner under {outer}")
     text = PRODUCT.format(what=WHAT[variant].format(cat=cat, outer=outer), outer=outer)
     return text if variant == "text" else text + MARK_NOTE
 
@@ -64,7 +72,12 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
             if all(t.exists() for t in targets):
                 continue
             vdir.mkdir(parents=True, exist_ok=True)
-            refs = render(variant, photo, inner, outer)
+            if variant == "lora":
+                from unpaired.pairs import pointer_refs
+
+                refs = pointer_refs(photo, inner)
+            else:
+                refs = render(variant, photo, inner, outer)
             refs[0].save(vdir / f"{stem}_in.jpg", quality=90)
             torch.cuda.synchronize()
             start = time.perf_counter()
@@ -92,14 +105,17 @@ def main(argv=None) -> None:
     p.add_argument("--k", type=int, default=4)
     p.add_argument("--size", type=int, default=768)
     p.add_argument("--out", required=True)
+    p.add_argument("--lora", help="학습한 LoRA 폴더(klein 전용). 주면 변형은 lora 하나")
+    p.add_argument("--tag", help="출력 폴더 이름(기본: 모델 이름)")
     args = p.parse_args(argv)
 
     from unpaired import editors
 
     rows = select(Path(args.index), args.split, args.per_bin, args.include_exp0)
     ann = Annotations(Path(args.fashionpedia))
-    model = editors.load(args.model)
-    run(model, rows, args.variants.split(","), args.k, args.size, Path(args.out) / model.name, ann)
+    model = editors.load(args.model, args.lora)
+    variants = ["lora"] if args.lora else args.variants.split(",")
+    run(model, rows, variants, args.k, args.size, Path(args.out) / (args.tag or model.name), ann)
 
 
 if __name__ == "__main__":
