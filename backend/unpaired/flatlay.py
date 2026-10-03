@@ -4,7 +4,8 @@
 그림자를 깐다. 어떤 옷이 어떤 옷을 얼마나 가리는지 정확히 알기 때문에 가려진 부분의 정답도 정확하다.
 생성 모델을 쓰지 않으므로 지어낸 픽셀이 정답에 섞이지 않는다(입력만 합성).
 
-배경은 Commons 수집분 중 옷이 찍히지 않은 범주만 쓴다(빨랫줄·옷걸이·마네킹·빨래 범주 제외).
+배경은 unpaired.backgrounds 로 만든 "위에서 본 침대·바닥" 사진(권장)이나, Commons 수집분 중
+옷이 찍히지 않은 범주(빨랫줄·옷걸이·마네킹·빨래 범주 제외)를 쓴다.
 """
 
 from __future__ import annotations
@@ -41,7 +42,10 @@ class Placed:
 
 
 def backgrounds(crawl_dir: Path) -> list[Path]:
-    """옷이 없는 범주의 실제 사진만. 그림·판화(제목)와 흑백 사진(채도)은 뺀다."""
+    """배경 목록. unpaired.backgrounds 로 만든 폴더(backgrounds.jsonl)면 그 사진 전부,
+    Commons 수집 폴더면 옷이 없는 범주의 실제 사진 중 그림·판화(제목)와 흑백(채도)을 뺀 것."""
+    if (crawl_dir / "backgrounds.jsonl").exists():
+        return sorted(crawl_dir.glob("bg*.jpg"))
     out = []
     for r in csv.DictReader((crawl_dir / "sources.csv").open(encoding="utf-8")):
         if r["seed"] not in BACKGROUND_SEEDS or any(w in r["title"].lower() for w in ART_WORDS):

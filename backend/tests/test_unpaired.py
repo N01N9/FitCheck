@@ -307,15 +307,17 @@ def test_orient_choose_flags_only_clear_rotations():
 def test_score_summary_counts_single_oracle_and_picked():
     from unpaired.score import summarize
 
-    def row(k, correct, color, gate):
-        return {"file": "a.jpg", "variant": "outline", "k": k, "share_bin": "lt15", "correct": correct,
-                "correct_color": color, "passed": gate < 1000, "gate_score": gate, "scores": {"palette_dist": 5.0}}
+    def row(k, margin, palette, gate, outer=0.0, marker=0.0):
+        scores = {"fg_frac": 0.3, "outer_frac": outer, "palette_dist": palette, "extra_color": 5.0}
+        return {"file": "a.jpg", "variant": "outline", "k": k, "share_bin": "lt15", "margin": margin,
+                "marker_frac": marker, "passed": gate < 1000, "gate_score": gate, "scores": scores}
 
-    rows = [row(0, False, False, 2000), row(1, True, False, 1500), row(2, True, True, 10), row(3, False, False, 1200)]
+    rows = [row(0, -0.1, 5.0, 2000), row(1, 0.1, 20.0, 1500), row(2, 0.1, 5.0, 10), row(3, 0.1, 5.0, 1200, outer=0.6)]
     cell = summarize(rows)["outline"]["lt15"]
     assert cell["single"] == 0 and cell["oracle"] == 1 and cell["picked"] == 1
     assert cell["single_c"] == 0 and cell["oracle_c"] == 1 and cell["picked_c"] == 1
     assert cell["gate_pass"] == 0.25 and cell["precision"] == 1.0
+    assert summarize([row(0, 0.1, 5.0, 10, marker=0.05)])["outline"]["lt15"]["single_c"] == 0  # 초록 선을 그림
 
 
 def test_load_usable_drops_rejected_hanger_station_and_rotated(tmp_path):

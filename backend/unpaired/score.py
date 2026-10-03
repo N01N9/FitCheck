@@ -1,10 +1,12 @@
 """unpaired.zeroshot 결과를 채점한다. 선택용 검사기와 평가용 지표를 일부러 분리한다.
 
   검사기(선택용)  gates.check — 형식·색·겉옷 섞임. K장 중 하나를 고르는 데만 쓴다
-  평가(보고용)    DINOv2-large(학습 안 함) 검색 순위. 결과물이 사진 속 옷들 중 대상 옷과 가장
-                 닮았으면(1위) 맞는 옷으로 본다. 겉옷을 내놓거나 겉옷과 합친 실패를 잡는다
+  평가(보고용)    right_item: DINOv2-large(학습 안 함) 검색 순위 1위 + 겉옷 색이 섞이지 않음.
+                 겉옷을 내놓거나 겉옷과 합친 실패를 잡는다 (2026-10-03 눈 확인: 검색 순위만으로는
+                 블레이저+셔츠 합본을 맞다고 보는 경우가 있었다)
+                 faithful: right_item + 보이는 색 일치 + 대상에 없던 색 없음 + 표시(초록 선) 안 그림
 
-지표(변형 × 가시율 구간). 뒤에 _c 가 붙은 것은 "맞는 옷 + 보이는 색 일치"(COLOR_OK) 기준이다
+지표(변형 × 가시율 구간). 뒤에 _c 가 붙은 것은 faithful 기준이다
   single  첫 장(k=0)이 맞는 옷인 비율
   oracle  K장 중 하나라도 맞는 비율 (검사기가 완벽할 때의 상한)
   picked  검사기 점수로 고른 한 장이 맞는 비율 (검사기가 색도 보므로 picked_c 는 낙관적이다)
@@ -30,13 +32,37 @@ from unpaired.masks import bbox
 
 DINO_ID = "facebook/dinov2-large"
 DINO_SIZE = 448  # 14 의 배수
-COLOR_OK = 12.0  # 평가용 색 일치: 대상의 보이는 색 → 결과물 팔레트 거리(ΔE00, kL=2)
+COLOR_OK = 12.0   # 대상의 보이는 색 → 결과물 팔레트 거리(ΔE00, kL=2)
+EXTRA_OK = 15.0   # 결과물 색 → 대상 색. 크면 대상에 없던 색(대개 겉옷 색)이 많다
+OUTER_OK = 0.2    # 결과물 중 겉옷 색에 더 가까운 픽셀 비율
+MARKER_OK = 0.01  # 결과물 옷 픽셀 중 표시용 초록에 가까운 비율
 
 
-def color_ok(scores: dict) -> bool:
-    if scores.get("palette_dist", 99.0) > COLOR_OK:
-        return False
-    return not (scores.get("target_chroma", 0.0) > 8 and not 0.5 <= scores.get("chroma_ratio", 0.0) <= 2.0)
+def marker_fraction(result: np.ndarray, fg: np.ndarray | None = None) -> float:
+    """결과물에 표시용 초록(pointer.MARK_RGB)이 그려진 비율. fg 가 없으면 흰 배경이 아닌 픽셀 기준."""
+    from core.color import srgb_to_lab
+    from unpaired.color import delta_e2000
+    from unpaired.pointer import MARK_RGB
+
+    if fg is None:
+        fg = (result.astype(int).sum(-1) < 735)
+    if fg.sum() == 0:
+        return 0.0
+    d = delta_e2000(srgb_to_lab(result[fg]), srgb_to_lab(np.array(MARK_RGB, np.uint8)))
+    return float((d < 20).mean())
+
+
+def right_item(r: dict) -> bool:
+    s = r["scores"]
+    no_outer = s.get("same_color", False) or s.get("outer_frac", 0.0) <= OUTER_OK
+    return r["margin"] > 0 and s.get("fg_frac", 0.0) >= 0.02 and no_outer
+
+
+def faithful(r: dict) -> bool:
+    s = r["scores"]
+    chroma_ok = not (s.get("target_chroma", 0.0) > 8 and not 0.5 <= s.get("chroma_ratio", 0.0) <= 2.0)
+    return (right_item(r) and s.get("palette_dist", 99.0) <= COLOR_OK and s.get("extra_color", 99.0) <= EXTRA_OK
+            and chroma_ok and r.get("marker_frac", 0.0) <= MARKER_OK)
 
 
 def masked_crop(img: np.ndarray, mask: np.ndarray, pad: float = 0.05) -> Image.Image:
@@ -78,6 +104,7 @@ class Dino:
 def summarize(rows: list[dict]) -> dict:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
+        r["correct"], r["correct_color"] = right_item(r), faithful(r)
         for b in (r["share_bin"], "all"):
             groups[(r["variant"], b, r["file"])].append(r)
     table: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -94,6 +121,7 @@ def summarize(rows: list[dict]) -> dict:
         cell["correct_any_k"].extend(r["correct"] for r in items)
         cell["precision"].extend(r["correct"] for r in items if r["passed"])
         cell["picked_palette_dist"].append(picked["scores"].get("palette_dist", np.nan))
+        cell["marker_drawn"].extend(r.get("marker_frac", 0.0) > MARKER_OK for r in items)
     out = {}
     for variant, bins in table.items():
         out[variant] = {}
@@ -111,13 +139,23 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="학습 없는 추출 결과 채점")
     p.add_argument("--run", required=True, help="zeroshot 결과 폴더(모델 이름까지)")
     p.add_argument("--fashionpedia", default="data/fashionpedia")
+    p.add_argument("--summarize-only", action="store_true", help="저장된 scores.jsonl 로 지표만 다시 계산(CPU)")
     args = p.parse_args(argv)
+
+    run = Path(args.run)
+    if args.summarize_only:
+        rows = [json.loads(line) for line in (run / "scores.jsonl").read_text().splitlines()]
+        for r in rows:
+            if "marker_frac" not in r:
+                img = np.array(Image.open(run / r["variant"] / f"{Path(r['file']).stem}_k{r['k']}.png").convert("RGB"))
+                r["marker_frac"] = round(marker_fraction(img), 4)
+        write(run, rows)
+        return
 
     from phase0.exp0_edit_models import disable_broken_cudnn
     from pipeline.garment.refine import BiRefNetRemover
 
     disable_broken_cudnn()
-    run = Path(args.run)
     cases = json.loads((run / "cases.json").read_text())
     ann = Annotations(Path(args.fashionpedia))
     remover = BiRefNetRemover()
@@ -144,14 +182,16 @@ def main(argv=None) -> None:
                              "scores": g.scores, "gate_score": gates.score(g),
                              "sim_target": round(float(sims[0]), 4),
                              "sim_outer": round(float(sims[outer_pos]), 4) if outer_pos else None,
-                             "margin": round(margin, 4)})
-                rows[-1]["correct"] = margin > 0 and 0.02 <= g.scores["fg_frac"]
-                rows[-1]["correct_color"] = rows[-1]["correct"] and color_ok(g.scores)
+                             "margin": round(margin, 4), "marker_frac": round(marker_fraction(result, fg), 4)})
         print(f"scored {case['file']}", flush=True)
+    write(run, rows)
+
+
+def write(run: Path, rows: list[dict]) -> None:
+    summary = summarize(rows)
     with (run / "scores.jsonl").open("w") as fh:
         for r in rows:
             fh.write(json.dumps(r, ensure_ascii=False, default=float) + "\n")
-    summary = summarize(rows)
     (run / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
