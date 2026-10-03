@@ -102,7 +102,7 @@ def main(argv=None) -> None:
         row = index[rec["file"]]
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
         _, (inner, outer) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"]),
-                                            ann.mask(rec["file"], row["outer"]["ann_id"])])
+                                            ann.mask(rec["file"], row["outer"]["ann_id"])], rec.get("max_side", 1024))
         x = np.array(Image.open(swap / "input" / f"{stem_of(rec)}.jpg").convert("RGB"))
         prod, prod_mask = product_pixels(bank, "front", rec["product"])
         pool = [i for i in by_cat[rec["product_category"]] if i != rec["product"]]

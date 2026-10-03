@@ -79,7 +79,7 @@ def from_swap(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: 
             continue
         row = index[rec["file"]]
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
-        _, (inner,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])])
+        _, (inner,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])], rec.get("max_side", 1024))
         x = np.array(Image.open(engine_dir / "input" / f"{stem_of(rec)}.jpg").convert("RGB"))
         solo = "outer" not in row  # swap_solo: 겉옷 없이 다 보이는 상의를 바꾼 것
         layer = "single" if solo else f"inner under {row['outer']['category']}"
@@ -96,7 +96,7 @@ def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index:
         stem = stem_of(rec)
         row = index[rec["file"]]
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
-        orig, (top,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])])
+        orig, (top,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])], rec.get("max_side", 1024))
         if rec.get("base"):  # swap_solo 로 상의를 바꾼 사진 위에 덧입힌 경우, 그 사진이 벗기기 정답
             orig = np.array(Image.open(rec["base"]).convert("RGB"))
         x = np.array(Image.open(engine_dir / "input" / f"{stem}.jpg").convert("RGB"))

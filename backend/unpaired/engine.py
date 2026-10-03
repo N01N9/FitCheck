@@ -204,7 +204,8 @@ def recheck(out: Path, ann: Annotations, bank: Path, index_dir: Path) -> dict:
             continue
         stem = stem_of(rec)
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
-        orig, (top,) = prepare(photo, [ann.mask(rec["file"], index[rec["file"]]["inner"]["ann_id"])])
+        orig, (top,) = prepare(photo, [ann.mask(rec["file"], index[rec["file"]]["inner"]["ann_id"])],
+                               rec.get("max_side", 1024))
         if rec.get("base"):
             orig = np.array(Image.open(rec["base"]).convert("RGB"))
         gen = np.array(Image.open(out / "raw" / f"{stem}.jpg").convert("RGB").resize(orig.shape[1::-1]))
@@ -257,6 +258,7 @@ def main(argv=None) -> None:
     p.add_argument("--fashionpedia", default="data/fashionpedia")
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--max-side", type=int, default=1024, help="생성 해상도(긴 변). 학습 쌍은 768 로 줄여 쓴다")
     p.add_argument("--from-swap", help="layer: swap_solo 출력 폴더. 승인된 교체 사진 위에 겉옷을 덧입힌다")
     args = p.parse_args(argv)
 
@@ -299,7 +301,7 @@ def main(argv=None) -> None:
             masks = [ann.mask(row["file"], row["inner"]["ann_id"])]
             if args.mode == "swap":
                 masks.append(ann.mask(row["file"], row["outer"]["ann_id"]))
-            cache = {row["file"]: prepare(photo, masks)}  # 같은 사진의 다음 상품까지만 들고 있는다
+            cache = {row["file"]: prepare(photo, masks, args.max_side)}  # 같은 사진의 다음 상품까지만 들고 있는다
         orig, masks = cache[row["file"]]
         if base is not None:  # 교체한 사진이 새 원본이 된다(크기는 prepare 와 같다)
             orig = np.array(Image.open(Path(args.from_swap) / "input" / f"{stem_of(base)}.jpg").convert("RGB"))
@@ -334,6 +336,7 @@ def main(argv=None) -> None:
         Image.fromarray(x).save(out / "input" / f"{stem}.jpg", quality=95)
         rec = {"file": row["file"], "out_stem": stem, "mode": args.mode, "inner_category": cat, "product": prod["item"],
                "product_category": prod["category"], "seconds": round(sec, 1), "size": orig.shape[1::-1],
+               "max_side": args.max_side,
                "approved": not check["reasons"], **check, **extra}
         log.write(json.dumps(rec, ensure_ascii=False, default=float) + "\n")
         log.flush()
