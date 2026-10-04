@@ -535,3 +535,15 @@ def test_natural_prompts_match_zero_shot_wording():
     flat = extract_prompt("jeans", "flat", "natural")
     assert "jeans" in flat and "green outline" in flat and "no person" in flat
     assert peel_prompt("blazer", "natural").startswith("Remove the blazer") and peel_prompt("blazer") == "[PEEL] blazer"
+
+
+def test_mcnemar_exact_and_compare():
+    from unpaired.compare import compare, mcnemar_exact
+
+    assert mcnemar_exact(0, 0) == 1.0
+    assert abs(mcnemar_exact(10, 0) - 2 / 2 ** 10) < 1e-12
+    assert mcnemar_exact(5, 5) == 1.0
+    a = {f: {"ok": f < 8} for f in range(10)}
+    b = {f: {"ok": f < 3} for f in range(10)}
+    r = compare(a, b, lambda r: r["ok"])
+    assert r["a_only"] == 5 and r["b_only"] == 0 and r["a_rate"] == 0.8 and r["b_rate"] == 0.3
