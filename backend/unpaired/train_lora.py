@@ -113,6 +113,25 @@ class Trainer:
         state = {k: v.to(self.torch.bfloat16) for k, v in get_peft_model_state_dict(self.tr).items()}
         Flux2KleinPipeline.save_lora_weights(path, transformer_lora_layers=state)
 
+    def load(self, path: Path) -> None:
+        """save 로 저장한 LoRA 를 다시 얹는다(이어 학습). 옵티마이저 상태는 새로 시작한다."""
+        from peft.utils import set_peft_model_state_dict
+        from safetensors.torch import load_file
+
+        state = load_file(str(path / "pytorch_lora_weights.safetensors"))
+        state = {k.removeprefix("transformer."): v for k, v in state.items()}
+        result = set_peft_model_state_dict(self.tr, state)
+        if getattr(result, "unexpected_keys", None):
+            raise ValueError(f"LoRA 키가 맞지 않습니다: {result.unexpected_keys[:3]}")
+        for p in self.params:
+            p.data = p.data.float()
+
+
+def latest_checkpoint(out: Path) -> tuple[int, Path] | None:
+    """out/stepNNNNN 중 가중치 파일까지 다 쓴 가장 늦은 것."""
+    done = [(int(d.name[4:]), d) for d in out.glob("step[0-9]*") if (d / "pytorch_lora_weights.safetensors").exists()]
+    return max(done) if done else None
+
 
 def weight_tokens(path: str | None, size: tuple[int, int]):
     """가중치 마스크(흰색=1)를 정답 토큰 격자(16px 단위)로 줄인다."""
@@ -173,12 +192,12 @@ def sampler(pairs: list[dict], weights: dict[str, float], rng: random.Random):
 
 
 def train(trainer: Trainer, pairs: list[dict], steps: int, out: Path, save_every: int, seed: int,
-          weights: dict[str, float] | None = None) -> None:
-    rng = random.Random(seed)
+          weights: dict[str, float] | None = None, start_step: int = 0) -> None:
+    rng = random.Random(seed + start_step)  # 이어 학습하면 앞과 다른 순서로 뽑는다
     draw = sampler(pairs, weights or {}, rng)
     log = (out / "train_log.jsonl").open("a")
     start = time.perf_counter()
-    for step in range(1, steps + 1):
+    for step in range(start_step + 1, steps + 1):
         pair = draw()
         size = tuple(pair["size"])
         target = trainer.encode_image(Image.open(pair["target"]), size)
@@ -210,6 +229,7 @@ def main(argv=None) -> None:
     p.add_argument("--save-every", type=int, default=500)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--source-weights", help='출처별 표집 비율, 예: "swap=3,flatlay=1"')
+    p.add_argument("--no-resume", action="store_true", help="out 에 체크포인트가 있어도 처음부터 학습한다")
     args = p.parse_args(argv)
 
     disable_broken_cudnn()
@@ -222,7 +242,15 @@ def main(argv=None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     pairs = [json.loads(line) for line in Path(args.pairs).read_text().splitlines() if line]
     (out / "config.json").write_text(json.dumps(vars(args), indent=2))
-    train(trainer, pairs, args.steps, out, args.save_every, args.seed, parse_weights(args.source_weights))
+    start_step = 0
+    last = None if args.no_resume else latest_checkpoint(out)
+    if last:
+        # GPU 를 잃거나 컨테이너가 재시작돼도 마지막 체크포인트부터 이어 간다(2026-10-04 컨테이너 GPU 유실)
+        start_step, path = last
+        trainer.load(path)
+        print(f"resume from {path}", flush=True)
+    if start_step < args.steps:
+        train(trainer, pairs, args.steps, out, args.save_every, args.seed, parse_weights(args.source_weights), start_step)
 
 
 if __name__ == "__main__":

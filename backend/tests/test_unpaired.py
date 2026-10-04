@@ -547,3 +547,15 @@ def test_mcnemar_exact_and_compare():
     b = {f: {"ok": f < 3} for f in range(10)}
     r = compare(a, b, lambda r: r["ok"])
     assert r["a_only"] == 5 and r["b_only"] == 0 and r["a_rate"] == 0.8 and r["b_rate"] == 0.3
+
+
+def test_latest_checkpoint_picks_last_complete(tmp_path):
+    from unpaired.train_lora import latest_checkpoint
+
+    assert latest_checkpoint(tmp_path) is None
+    for step, complete in ((500, True), (1000, True), (1500, False)):
+        d = tmp_path / f"step{step:05d}"
+        d.mkdir()
+        if complete:
+            (d / "pytorch_lora_weights.safetensors").write_bytes(b"x")
+    assert latest_checkpoint(tmp_path) == (1000, tmp_path / "step01000")
