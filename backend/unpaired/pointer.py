@@ -44,8 +44,13 @@ def grey_outer(img: np.ndarray, outer: np.ndarray, target: np.ndarray, color=MAR
     return outline(out, target, color)
 
 
-def dim_crop(img: np.ndarray, target: np.ndarray, pad: float = 0.15, factor: float = 0.3) -> np.ndarray:
-    """대상 bbox 를 pad 만큼 넓혀 자르고, 대상 밖 픽셀은 factor 배로 어둡게 한다."""
+def dim_crop(img: np.ndarray, target: np.ndarray, pad: float = 0.15, factor: float = 0.3,
+             min_aspect: float = 0.4) -> np.ndarray:
+    """대상 bbox 를 pad 만큼 넓혀 자르고, 대상 밖 픽셀은 factor 배로 어둡게 한다.
+
+    겉옷 사이로 아주 조금 보이는 이너는 크롭이 가는 띠(예: 48×384)가 되어 klein 입력 제한(가로·세로 64px 이상)에
+    걸린다. 그래서 가로/세로 비율이 [min_aspect, 1/min_aspect] 안에 들도록 짧은 쪽을 주변(어둡게 된 영역)으로 넓힌다.
+    """
     box = bbox(target)
     if box is None:
         raise ValueError("빈 마스크")
@@ -53,6 +58,13 @@ def dim_crop(img: np.ndarray, target: np.ndarray, pad: float = 0.15, factor: flo
     px, py = int((x1 - x0) * pad), int((y1 - y0) * pad)
     h, w = target.shape
     x0, y0, x1, y1 = max(0, x0 - px), max(0, y0 - py), min(w, x1 + px), min(h, y1 + py)
+    cw, ch = x1 - x0, y1 - y0
+    if cw < min_aspect * ch:
+        grow = int(min_aspect * ch) - cw
+        x0, x1 = max(0, x0 - grow // 2), min(w, x1 + grow - grow // 2)
+    elif ch < min_aspect * cw:
+        grow = int(min_aspect * cw) - ch
+        y0, y1 = max(0, y0 - grow // 2), min(h, y1 + grow - grow // 2)
     out = img.astype(np.float32)
     out[~target] *= factor
     return out[y0:y1, x0:x1].round().astype(np.uint8)
