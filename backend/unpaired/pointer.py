@@ -70,10 +70,16 @@ def dim_crop(img: np.ndarray, target: np.ndarray, pad: float = 0.15, factor: flo
     return out[y0:y1, x0:x1].round().astype(np.uint8)
 
 
-def to_pil(arr: np.ndarray, multiple: int = 16, max_side: int = 1024) -> Image.Image:
-    """모델 입력 크기(긴 변 max_side, multiple 의 배수)로 맞춘 PIL 이미지."""
+def to_pil(arr: np.ndarray, multiple: int = 16, max_side: int = 1024, min_long: int = 384) -> Image.Image:
+    """모델 입력 크기(긴 변 max_side, multiple 의 배수)로 맞춘 PIL 이미지.
+
+    아주 작은 크롭(예: 80×48)은 klein 입력 제한(가로·세로 64px 이상)에 걸리므로 긴 변이 min_long 이 되게 키운다
+    (학습 쌍의 크롭도 긴 변 384 로 맞춘다: pairs.CROP_LONG_SIDE)."""
     im = Image.fromarray(arr)
     im.thumbnail((max_side, max_side), Image.LANCZOS)
+    if max(im.size) < min_long:
+        s = min_long / max(im.size)
+        im = im.resize((max(1, round(im.width * s)), max(1, round(im.height * s))), Image.LANCZOS)
     w, h = (im.width // multiple) * multiple, (im.height // multiple) * multiple
     return im.crop((0, 0, max(w, multiple), max(h, multiple)))
 
