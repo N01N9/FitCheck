@@ -78,7 +78,7 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
             if variant.startswith("lora"):
                 from unpaired.pairs import pointer_refs
 
-                refs = pointer_refs(photo, inner)
+                refs = pointer_refs(photo, inner, style)
             else:
                 refs = render(variant, photo, inner, outer)
             refs[0].save(vdir / f"{stem}_in.jpg", quality=90)

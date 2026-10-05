@@ -88,7 +88,7 @@ def main(argv=None) -> None:
             continue
         cat = LABELS[c["label"]]
         if args.lora:
-            refs, prompt = pointer_refs(photo, mask), extract_prompt(cat, "flat", args.prompt_style)
+            refs, prompt = pointer_refs(photo, mask, args.prompt_style), extract_prompt(cat, "flat", args.prompt_style)
         else:
             refs, prompt = [fit(photo, 768)], ZS_PROMPT.format(cat=cat)
         results = model(refs, prompt, list(range(args.k)), (768, 768))

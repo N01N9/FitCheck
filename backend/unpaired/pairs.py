@@ -34,7 +34,7 @@ CROP_LONG_SIDE = 384
 
 # 지시문 형식. struct = 새 형식 문구(v1). natural = 증류 모델이 이미 아는 자연어(학습 없는 outline_dimcrop 과 같은 문장).
 # 2026-10-03 진단: base 에서 struct 로 학습한 LoRA 는 4스텝 증류 모델에서 입력을 그대로 다시 그렸다.
-PROMPT_STYLES = ("struct", "natural")
+PROMPT_STYLES = ("struct", "natural", "generic", "dim")
 SOLO_PRODUCT = ("Create a store product photo of {what}: the garment alone, laid flat and neatly smoothed, front view, "
                 "centered on a plain white background. Keep its exact colors, pattern, print and details. "
                 "Show only this one garment: no person, no other clothing, no other objects.")
@@ -42,7 +42,41 @@ NATURAL_PEEL = ("Remove the {outer} marked with the green outline from the perso
                 "hair, pose, the clothes underneath and the background exactly the same.")
 
 
+# v3: 대상을 넓은 이름(top 등)으로만 부른다. v2 엄격 판정에서 캐미솔·민소매·터틀넥을 "t-shirt" 라고 부르니
+# 평범한 반팔 티로 바꿔 그렸다(84건 중 10건). 실제 앱에서도 세부 종류는 모르므로 모델이 사진에서 알아내게 한다.
+GENERIC = {"inner": "top", "outer": "outer garment", "bottom": "bottoms", "onepiece": "dress"}
+_FINE_TO_GROUP = {fine: group for group, fine in __import__("unpaired.bank", fromlist=["CATEGORY"]).CATEGORY.values()}
+_FINE_TO_GROUP.update({"t-shirt": "inner", "shirt": "inner", "sweater": "inner", "jacket": "outer", "coat": "outer",
+                       "cardigan": "outer", "vest": "outer", "cape": "outer", "trousers": "bottom", "pants": "bottom"})
+
+
+def generic(category: str) -> str:
+    return GENERIC.get(_FINE_TO_GROUP.get(category, ""), category)
+
+
+# v3 "dim": 사진에 아무 표시도 그리지 않는다. v2 는 초록 외곽선이 결과물의 목 테두리로 새어 나왔다(엄격 판정의 가장 큰
+# 단일 실패 원인). 지시문에서 "초록 표시를 그리지 마라" 를 빼면 오히려 더 새어 나왔다(28건 중 6 → 16). 그래서 표시 대신
+# 대상만 밝고 나머지는 어둡게 한 확대 이미지(image 2)로 가리킨다. 대상 이름은 generic 처럼 넓게 부른다.
+DIM_WHAT = {"inner": "the {cat} shown bright in image 2, which is worn under the {outer} in the photo (image 1)",
+            "flat": "the {cat} shown bright in image 2, which lies among other things in the photo (image 1)",
+            "outer": "the {cat} shown bright in image 2, which is the outer layer in the photo (image 1)",
+            "single": "the {cat} shown bright in image 2 (a close-up of the photo, image 1)"}
+DIM_PRODUCT = ("Create a store product photo of {what}: the garment alone, laid flat and neatly smoothed, front view, "
+               "centered on a plain white background. Keep its exact colors, pattern, print and details. Show only this "
+               "one garment: no person, no other clothing, no accessories, no other objects. In image 2 everything "
+               "except the garment is darkened only to point at it.")
+
+
 def extract_prompt(category: str, layer: str, style: str = "struct") -> str:
+    if style == "dim":
+        cat = generic(category)
+        if layer.startswith("inner under "):
+            what = DIM_WHAT["inner"].format(cat=cat, outer=layer[len("inner under "):])
+        else:
+            what = DIM_WHAT.get(layer, DIM_WHAT["single"]).format(cat=cat)
+        return DIM_PRODUCT.format(what=what)
+    if style == "generic":
+        category, style = generic(category), "natural"
     if style == "struct":
         return f"[EXTRACT] {category}; layer={layer}"
     from unpaired.zeroshot import MARK_NOTE, PRODUCT, WHAT
@@ -71,8 +105,10 @@ def fit(img: np.ndarray, long_side: int) -> Image.Image:
 
 
 class Writer:
-    def __init__(self, out: Path, hidden_weights: bool = False, style: str = "struct"):
+    def __init__(self, out: Path, hidden_weights: bool = False, style: str = "struct", max_palette: float | None = None):
         self.out = out
+        self.max_palette = max_palette  # 엔진 결과 속 옷 색과 정답 상품 색의 팔레트 거리 상한(넘으면 버린다)
+        self.skipped = 0
         self.style = style
         self.hidden_weights = hidden_weights  # 가려졌던 곳의 무늬·글자는 채점하지 않는 가중치(unpaired.weights)
         (out / "refs").mkdir(parents=True, exist_ok=True)
@@ -116,14 +152,18 @@ def product_weight(w: Writer, pid: str, bank: Path, item: str, visible: np.ndarr
     return w.weight(pid, extract_weights(img, mask, visible_width_ratio(visible, torso), EXTRACT_SIZE))
 
 
-def pointer_refs(img: np.ndarray, mask: np.ndarray) -> list[Image.Image]:
-    """참조 1: 사진 전체 + 외곽선, 참조 2: 대상 주변 크롭(대상 밖 어둡게)."""
-    return [fit(outline(img, mask), REF_LONG_SIDE), fit(dim_crop(img, mask), CROP_LONG_SIDE)]
+def pointer_refs(img: np.ndarray, mask: np.ndarray, style: str = "natural") -> list[Image.Image]:
+    """참조 1: 사진 전체 + 외곽선(style "dim" 이면 표시 없음), 참조 2: 대상 주변 크롭(대상 밖 어둡게)."""
+    full = img if style == "dim" else outline(img, mask)
+    return [fit(full, REF_LONG_SIDE), fit(dim_crop(img, mask), CROP_LONG_SIDE)]
 
 
 def from_swap(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: dict[str, dict]) -> None:
     for rec in map(json.loads, (engine_dir / "attempts.jsonl").read_text().splitlines()):
         if not rec["approved"]:
+            continue
+        if w.max_palette is not None and rec["scores"].get("palette_dist", 0) > w.max_palette:
+            w.skipped += 1  # 사진 속 색과 정답 색이 다르면 "색을 바꿔도 된다" 고 가르친다
             continue
         row = index[rec["file"]]
         photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
@@ -138,12 +178,15 @@ def from_swap(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: 
             _, (_, outer) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"]),
                                             ann.mask(rec["file"], row["outer"]["ann_id"])], rec.get("max_side", 1024))
             weight = product_weight(w, pid, bank, rec["product"], inner, inner | outer)
-        w.add(pid, pointer_refs(x, inner), str(bank / "front" / f"{rec['product']}.jpg"),
+        w.add(pid, pointer_refs(x, inner, w.style), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], layer, w.style), EXTRACT_SIZE,
               {"source": source, "share_bin": rec.get("share_bin"), "product": rec["product"], **weight})
 
 
-def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: dict[str, dict]) -> None:
+def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index: dict[str, dict],
+               base_palette: dict[str, float] | None = None) -> None:
+    """base_palette: 덧입힌 바탕 사진(swap_solo 결과) 이름 → 그 교체의 팔레트 거리."""
+    base_palette = base_palette or {}
     for rec in map(json.loads, (engine_dir / "attempts.jsonl").read_text().splitlines()):
         if not rec["approved"]:
             continue
@@ -163,13 +206,15 @@ def from_layer(w: Writer, engine_dir: Path, ann: Annotations, bank: Path, index:
             weight = w.weight(pid, peel_weights(np.asarray(peel_target), hidden))
         w.add(pid, [fit(outline(x, jacket), REF_LONG_SIDE)], peel_target, peel_prompt(rec["product_category"], w.style),
               peel_target.size, {"source": "layer_peel", **weight})
-        w.add(f"outer_{engine_dir.name}_{stem}", pointer_refs(x, jacket), str(bank / "front" / f"{rec['product']}.jpg"),
+        w.add(f"outer_{engine_dir.name}_{stem}", pointer_refs(x, jacket, w.style), str(bank / "front" / f"{rec['product']}.jpg"),
               extract_prompt(rec["product_category"], "outer", w.style), EXTRACT_SIZE,
               {"source": "layer_outer", "product": rec["product"]})
-        if rec.get("inner_product"):  # 이너도 은행 상품이므로 실제 정답이 있다
+        base_pal = base_palette.get(Path(rec["base"]).stem) if rec.get("base") else None
+        if rec.get("inner_product") and (w.max_palette is None or base_pal is None or base_pal <= w.max_palette):
+            # 이너도 은행 상품이므로 실제 정답이 있다
             pid = f"inner_{engine_dir.name}_{stem}"
             weight = product_weight(w, pid, bank, rec["inner_product"], top & ~jacket, top | jacket)
-            w.add(pid, pointer_refs(x, top & ~jacket), str(bank / "front" / f"{rec['inner_product']}.jpg"),
+            w.add(pid, pointer_refs(x, top & ~jacket, w.style), str(bank / "front" / f"{rec['inner_product']}.jpg"),
                   extract_prompt(rec["inner_product_category"], f"inner under {rec['product_category']}", w.style),
                   EXTRACT_SIZE, {"source": "layer_inner", "product": rec["inner_product"], **weight})
 
@@ -182,7 +227,7 @@ def from_flatlay(w: Writer, flat_dir: Path, bank: Path) -> None:
             if not it["target"]:
                 continue
             mask = labels == it["label"]
-            w.add(f"flat_{flat_dir.name}_{scene['scene']}_{it['label']}", pointer_refs(img, mask),
+            w.add(f"flat_{flat_dir.name}_{scene['scene']}_{it['label']}", pointer_refs(img, mask, w.style),
                   str(bank / "front" / f"{it['item']}.jpg"), extract_prompt(it["category"], "flat", w.style), EXTRACT_SIZE,
                   {"source": "flatlay", "product": it["item"], "visible_frac": it["visible_frac"]})
 
@@ -194,8 +239,32 @@ def from_identity(w: Writer, bank: Path, n: int, seed: int = 0) -> None:
         r = rows[j]
         img = np.array(Image.open(bank / "front" / f"{r['item']}.jpg").convert("RGB"))
         mask = np.asarray(Image.open(bank / "front_mask" / f"{r['item']}.png")) > 127
-        w.add(f"ident_{r['item']}", pointer_refs(img, mask), str(bank / "front" / f"{r['item']}.jpg"),
+        w.add(f"ident_{r['item']}", pointer_refs(img, mask, w.style), str(bank / "front" / f"{r['item']}.jpg"),
               extract_prompt(r["category"], "single", w.style), EXTRACT_SIZE, {"source": "identity", "product": r["item"]})
+
+
+def from_accessories(w: Writer, bank: Path, pieces_dir: Path, n: int, seed: int = 1) -> None:
+    """상품 위에 넥타이·벨트·스카프·가방을 얹은 입력 → 깨끗한 원래 상품 (unpaired.accessories)."""
+    from unpaired import accessories
+
+    rows = [r for r in load_usable(bank) if r["group"] in ("inner", "onepiece")]
+    pieces = accessories.load(pieces_dir)
+    rng = np.random.default_rng(seed)
+    made = tries = 0
+    while made < n and tries < 3 * n:
+        tries += 1
+        r = rows[rng.integers(len(rows))]
+        pc = pieces[rng.integers(len(pieces))]
+        img = np.array(Image.open(bank / "front" / f"{r['item']}.jpg").convert("RGB"))
+        mask = np.asarray(Image.open(bank / "front_mask" / f"{r['item']}.png")) > 127
+        piece = Image.open(pieces_dir / pc["file"]).convert("RGBA")
+        x, acc, covered = accessories.place(img, mask, piece, pc["kind"], rng)
+        if covered.sum() < 0.02 * mask.sum() or (mask & ~acc).sum() < 0.5 * mask.sum():
+            continue
+        w.add(f"acc_{r['item']}_{made}", pointer_refs(x, mask & ~acc, w.style), str(bank / "front" / f"{r['item']}.jpg"),
+              extract_prompt(r["category"], "single", w.style), EXTRACT_SIZE,
+              {"source": "accessory", "product": r["item"], "accessory": pc["kind"]})
+        made += 1
 
 
 def main(argv=None) -> None:
@@ -210,9 +279,12 @@ def main(argv=None) -> None:
     p.add_argument("--fashionpedia", default="data/fashionpedia")
     p.add_argument("--hidden-weights", action="store_true", help="가려졌던 곳의 무늬·글자는 채점하지 않는 가중치를 붙인다")
     p.add_argument("--prompt-style", choices=PROMPT_STYLES, default="struct")
+    p.add_argument("--accessories", type=int, default=0, help="장신구를 얹은 상품 쌍 개수")
+    p.add_argument("--accessory-dir", default="data/unpaired/accessories")
+    p.add_argument("--max-palette", type=float, help="엔진 결과 색이 정답과 이만큼 넘게 다르면 버린다 (v3: 6)")
     args = p.parse_args(argv)
 
-    w = Writer(Path(args.out), args.hidden_weights, args.prompt_style)
+    w = Writer(Path(args.out), args.hidden_weights, args.prompt_style, args.max_palette)
     bank = Path(args.bank)
     if args.swap or args.layer:
         ann = Annotations(Path(args.fashionpedia))
@@ -223,13 +295,20 @@ def main(argv=None) -> None:
                 index[r["file"]] = r
         for d in args.swap:
             from_swap(w, Path(d), ann, bank, index)
+        base_palette = {}
+        for d in args.swap:
+            for rec in map(json.loads, (Path(d) / "attempts.jsonl").read_text().splitlines()):
+                if rec["approved"]:
+                    base_palette[stem_of(rec)] = rec["scores"].get("palette_dist", 0)
         for d in args.layer:
-            from_layer(w, Path(d), ann, bank, index)
+            from_layer(w, Path(d), ann, bank, index, base_palette)
     for d in args.flatlay:
         from_flatlay(w, Path(d), bank)
     if args.identity:
         from_identity(w, bank, args.identity)
-    print(json.dumps({"pairs": w.n, "out": args.out}))
+    if args.accessories:
+        from_accessories(w, bank, Path(args.accessory_dir), args.accessories)
+    print(json.dumps({"pairs": w.n, "skipped_color": w.skipped, "out": args.out}))
 
 
 if __name__ == "__main__":

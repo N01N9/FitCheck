@@ -559,3 +559,40 @@ def test_latest_checkpoint_picks_last_complete(tmp_path):
         if complete:
             (d / "pytorch_lora_weights.safetensors").write_bytes(b"x")
     assert latest_checkpoint(tmp_path) == (1000, tmp_path / "step01000")
+
+
+def test_generic_names_hide_fine_category():
+    from unpaired.pairs import extract_prompt, generic
+    assert generic("tank top") == "top" and generic("t-shirt") == "top" and generic("sweater") == "top"
+    assert generic("cardigan") == "outer garment" and generic("jeans") == "bottoms" and generic("dress") == "dress"
+    p = extract_prompt("t-shirt", "inner under jacket", "generic")
+    assert "t-shirt" not in p and "the top" in p and "jacket" in p
+
+
+def test_accessory_place_covers_garment():
+    import numpy as np
+    from PIL import Image
+    from unpaired.accessories import place
+    img = np.full((200, 160, 3), 255, np.uint8)
+    mask = np.zeros((200, 160), bool)
+    mask[20:180, 30:130] = True
+    img[mask] = (40, 60, 200)
+    piece = Image.new("RGBA", (20, 120), (200, 0, 0, 255))
+    out, acc, covered = place(img, mask, piece, "tie", np.random.default_rng(0))
+    assert out.shape == img.shape and covered.any() and (acc & ~mask).sum() < acc.sum()
+    assert (out[covered] == (200, 0, 0)).all(axis=1).mean() > 0.9
+
+
+def test_dim_style_draws_no_marks():
+    import numpy as np
+    from unpaired.pairs import extract_prompt, pointer_refs
+    img = np.full((300, 200, 3), 128, np.uint8)
+    mask = np.zeros((300, 200), bool)
+    mask[100:200, 50:150] = True
+    full, crop = pointer_refs(img, mask, "dim")
+    a = np.asarray(full)
+    assert not ((a[..., 1] > 200) & (a[..., 0] < 80)).any()  # 초록 외곽선 없음
+    marked = np.asarray(pointer_refs(img, mask, "natural")[0])
+    assert ((marked[..., 1] > 200) & (marked[..., 0] < 80)).any()
+    p = extract_prompt("tank top", "inner under jacket", "dim")
+    assert "green" not in p and "tank" not in p and "the top shown bright in image 2" in p and "jacket" in p

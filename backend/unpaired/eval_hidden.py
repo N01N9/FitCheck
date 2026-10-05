@@ -86,8 +86,8 @@ def main(argv=None) -> None:
         Image.fromarray(peeled).save(out / f"{r['id']}_peel.jpg", quality=92)
         # 추출: 가린 사진 vs 원본
         layer = f"inner under {r['donor_category']}"
-        occl = model(pointer_refs(x, top & ~jacket), extract_prompt(r["category"], layer, args.prompt_style), [0], (768, 768))[0]
-        clean = model(pointer_refs(orig, top), extract_prompt(r["category"], "single", args.prompt_style), [0], (768, 768))[0]
+        occl = model(pointer_refs(x, top & ~jacket, args.prompt_style), extract_prompt(r["category"], layer, args.prompt_style), [0], (768, 768))[0]
+        clean = model(pointer_refs(orig, top, args.prompt_style), extract_prompt(r["category"], "single", args.prompt_style), [0], (768, 768))[0]
         occl.save(out / f"{r['id']}_extract_occluded.png")
         clean.save(out / f"{r['id']}_extract_clean.png")
         e = dino([occl, clean])
