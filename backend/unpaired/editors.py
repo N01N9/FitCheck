@@ -70,7 +70,63 @@ class Qie:
         return out
 
 
+NAS = "/nas/models/models"
+FIRERED_PATH = f"{NAS}/szwagros--firered-image-edit-1.1-bnb-4bit"  # FireRed-Image-Edit-1.1 (Apache), bnb 4비트
+JOYPLUS_PATH = f"{NAS}/jdopensource--JoyAI-Image-Edit-Plus-Diffusers"  # JoyAI-Image-Edit-Plus (Apache)
+
+
+class FireRed:
+    """FireRed-Image-Edit-1.1: QIE-2511 과 같은 구조(QwenImageEditPlusPipeline). 4비트(bnb) 판."""
+
+    def __init__(self, steps: int = 40, cfg: float = 4.0, lightning: bool = False):
+        import torch
+        from diffusers import QwenImageEditPlusPipeline
+
+        self.torch, self.steps, self.cfg = torch, steps, cfg
+        self.pipe = QwenImageEditPlusPipeline.from_pretrained(FIRERED_PATH, torch_dtype=torch.bfloat16, device_map="cuda")
+        self.name = f"firered11_bnb4_s{steps}"
+        if lightning:  # 구조가 QIE-2511 과 같아 그 Lightning LoRA 를 얹어 본다(40스텝 CFG 는 장당 6분)
+            from huggingface_hub import hf_hub_download
+            self.pipe.load_lora_weights(hf_hub_download(*QIE_LIGHTNING), adapter_name="lightning")
+            self.pipe.set_adapters(["lightning"], adapter_weights=[1.0])
+            self.steps, self.cfg, self.name = 4, 1.0, "firered11_bnb4_qielightning4"
+
+    def __call__(self, images, prompt, seeds, size):
+        out = []
+        for s in seeds:
+            g = self.torch.Generator("cuda").manual_seed(s)
+            out += self.pipe(image=images, prompt=prompt, negative_prompt=NEGATIVE, true_cfg_scale=self.cfg,
+                             width=size[0], height=size[1], num_inference_steps=self.steps, generator=g).images
+        return out
+
+
+class JoyPlus:
+    """JoyAI-Image-Edit-Plus: 여러 참조 이미지를 받는 편집 모델(Qwen3-VL-8B 글 인코더 + 16B MMDiT)."""
+
+    def __init__(self, steps: int = 30, cfg: float = 4.0):
+        import torch
+        from diffusers import JoyImageEditPlusPipeline
+
+        self.torch, self.steps, self.cfg = torch, steps, cfg
+        self.pipe = JoyImageEditPlusPipeline.from_pretrained(JOYPLUS_PATH, torch_dtype=torch.bfloat16).to("cuda")
+        self.name = f"joyplus_s{steps}"
+
+    def __call__(self, images, prompt, seeds, size):
+        out = []
+        for s in seeds:
+            g = self.torch.Generator("cuda").manual_seed(s)
+            out += self.pipe(images=images, prompt=prompt, negative_prompt=NEGATIVE, height=size[1], width=size[0],
+                             num_inference_steps=self.steps, guidance_scale=self.cfg, generator=g).images
+        return out
+
+
 def load(name: str, lora: str | None = None, base: bool = False):
     disable_broken_cudnn()
+    if name in ("firered", "firered_fast"):
+        require_free_memory(40)
+        return FireRed(lightning=name == "firered_fast")
+    if name == "joyplus":
+        require_free_memory(60)
+        return JoyPlus()
     require_free_memory(30 if name == "klein" else 75)
     return Klein(lora, base=base) if name == "klein" else Qie()

@@ -40,6 +40,9 @@ MARK_NOTE = " The green marks are only pointers; do not draw them."
 
 def prompt_for(variant: str, row: dict, style: str = "struct") -> str:
     cat, outer = row["inner"]["category"], row["outer"]["category"]
+    if variant == "dim":  # 표시 없음: 원본 사진 + 대상만 밝은 확대 (pairs 의 "dim" 형식, 학습 없는 모델에도 쓴다)
+        from unpaired.pairs import extract_prompt
+        return extract_prompt(row["inner"]["category"], f"inner under {row['outer']['category']}", "dim")
     if variant == "lora":
         from unpaired.pairs import extract_prompt
 
@@ -75,10 +78,10 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
             if all(t.exists() for t in targets):
                 continue
             vdir.mkdir(parents=True, exist_ok=True)
-            if variant.startswith("lora"):
+            if variant.startswith("lora") or variant == "dim":
                 from unpaired.pairs import pointer_refs
 
-                refs = pointer_refs(photo, inner, style)
+                refs = pointer_refs(photo, inner, "dim" if variant == "dim" else style)
             else:
                 refs = render(variant, photo, inner, outer)
             refs[0].save(vdir / f"{stem}_in.jpg", quality=90)
@@ -98,7 +101,7 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="학습 없는 이너 추출 기준선")
-    p.add_argument("--model", choices=["klein", "qie"], required=True)
+    p.add_argument("--model", choices=["klein", "qie", "firered", "firered_fast", "joyplus"], required=True)
     p.add_argument("--variants", default=",".join(VARIANTS))
     p.add_argument("--index", default="data/unpaired/index/layered.jsonl")
     p.add_argument("--fashionpedia", default="data/fashionpedia")
