@@ -243,6 +243,48 @@ def from_identity(w: Writer, bank: Path, n: int, seed: int = 0) -> None:
               extract_prompt(r["category"], "single", w.style), EXTRACT_SIZE, {"source": "identity", "product": r["item"]})
 
 
+def from_swap_accessories(w: Writer, engine_dirs: list[Path], ann: Annotations, index: dict[str, dict], bank: Path,
+                          pieces_dir: Path, n: int, seed: int = 2) -> None:
+    """엔진이 상의를 바꾼 사람 사진의 이너 위에 실제 넥타이·스카프·가방 조각을 얹은 입력 → 원래 은행 상품.
+
+    v3 엄격 판정에서도 넥타이·목걸이를 같이 그렸다(84건 중 10건). 엔진은 상의를 바꾸며 넥타이까지 지운 경우가 많아
+    (넥타이 사진 160건 중 승인 55건, 대부분 넥타이 없음) "사람이 맨 넥타이가 있는 사진 → 넥타이 없는 상품" 예가 거의
+    없었다. 상품 위에 얹은 장신구 쌍(from_accessories)과 달리 실제 착용 사진 위에 얹는다."""
+    from unpaired import accessories
+
+    pieces = [p for p in accessories.load(pieces_dir) if p["kind"] in ("tie", "scarf", "bag")]
+    kinds = {k: [p for p in pieces if p["kind"] == k] for k in ("tie", "scarf", "bag")}
+    recs = []
+    for d in engine_dirs:
+        for rec in map(json.loads, (d / "attempts.jsonl").read_text().splitlines()):
+            if rec["approved"] and (w.max_palette is None or rec["scores"].get("palette_dist", 0) <= w.max_palette):
+                recs.append((d, rec))
+    rng = np.random.default_rng(seed)
+    rng.shuffle(recs)
+    made = 0
+    for d, rec in recs:
+        if made >= n:
+            break
+        row = index[rec["file"]]
+        photo = np.array(Image.open(ann.image_dir / rec["file"]).convert("RGB"))
+        _, (inner,) = prepare(photo, [ann.mask(rec["file"], row["inner"]["ann_id"])], rec.get("max_side", 1024))
+        x = np.array(Image.open(d / "input" / f"{stem_of(rec)}.jpg").convert("RGB"))
+        if inner.shape != x.shape[:2]:
+            continue
+        kind = rng.choice(["tie", "scarf", "bag"], p=[0.6, 0.25, 0.15])
+        pc = kinds[kind][rng.integers(len(kinds[kind]))]
+        piece = Image.open(pieces_dir / pc["file"]).convert("RGBA")
+        x2, acc, covered = accessories.place(x, inner, piece, kind, rng)
+        if covered.sum() < 0.04 * inner.sum() or (inner & ~acc).sum() < 0.4 * inner.sum():
+            continue
+        solo = "outer" not in row
+        layer = "single" if solo else f"inner under {row['outer']['category']}"
+        w.add(f"swapacc_{d.name}_{stem_of(rec)}", pointer_refs(x2, inner & ~acc, w.style),
+              str(bank / "front" / f"{rec['product']}.jpg"), extract_prompt(rec["product_category"], layer, w.style),
+              EXTRACT_SIZE, {"source": "swap_acc", "product": rec["product"], "accessory": kind})
+        made += 1
+
+
 def from_accessories(w: Writer, bank: Path, pieces_dir: Path, n: int, seed: int = 1) -> None:
     """상품 위에 넥타이·벨트·스카프·가방을 얹은 입력 → 깨끗한 원래 상품 (unpaired.accessories)."""
     from unpaired import accessories
@@ -281,6 +323,7 @@ def main(argv=None) -> None:
     p.add_argument("--prompt-style", choices=PROMPT_STYLES, default="struct")
     p.add_argument("--accessories", type=int, default=0, help="장신구를 얹은 상품 쌍 개수")
     p.add_argument("--accessory-dir", default="data/unpaired/accessories")
+    p.add_argument("--swap-accessories", type=int, default=0, help="엔진 교체 사진 위에 장신구를 얹은 쌍 개수(--swap 폴더 사용)")
     p.add_argument("--max-palette", type=float, help="엔진 결과 색이 정답과 이만큼 넘게 다르면 버린다 (v3: 6)")
     args = p.parse_args(argv)
 
@@ -302,6 +345,9 @@ def main(argv=None) -> None:
                     base_palette[stem_of(rec)] = rec["scores"].get("palette_dist", 0)
         for d in args.layer:
             from_layer(w, Path(d), ann, bank, index, base_palette)
+        if args.swap_accessories:
+            from_swap_accessories(w, [Path(d) for d in args.swap], ann, index, bank, Path(args.accessory_dir),
+                                  args.swap_accessories)
     for d in args.flatlay:
         from_flatlay(w, Path(d), bank)
     if args.identity:
