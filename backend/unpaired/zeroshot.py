@@ -101,7 +101,7 @@ def run(model, rows: list[dict], variants: list[str], k: int, size: int, out: Pa
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="학습 없는 이너 추출 기준선")
-    p.add_argument("--model", choices=["klein", "qie", "firered", "firered_fast", "joyplus"], required=True)
+    p.add_argument("--model", choices=["klein", "qie", "firered", "firered_fast", "joyplus", "qie_lora", "qie_lora_slow"], required=True)
     p.add_argument("--variants", default=",".join(VARIANTS))
     p.add_argument("--index", default="data/unpaired/index/layered.jsonl")
     p.add_argument("--fashionpedia", default="data/fashionpedia")

@@ -120,8 +120,43 @@ class JoyPlus:
         return out
 
 
+class QieLora:
+    """QIE-2511 + 우리가 학습한 LoRA(train_qie.py). 참조 이미지는 학습 때처럼 768² 넓이로 넣는다.
+    fast=True 면 Lightning 4스텝 LoRA 를 같이 얹고(CFG 없음), 아니면 steps 스텝 CFG cfg."""
+
+    def __init__(self, lora: str, fast: bool = True, steps: int = 20, cfg: float = 4.0):
+        import torch
+        from diffusers import QwenImageEditPlusPipeline
+
+        from unpaired.train_qie import set_ref_area
+
+        set_ref_area()
+        self.torch = torch
+        self.pipe = QwenImageEditPlusPipeline.from_pretrained(QIE_ID, torch_dtype=torch.bfloat16, device_map="cuda")
+        self.pipe.load_lora_weights(lora, adapter_name="ours")
+        names, weights = ["ours"], [1.0]
+        if fast:
+            from huggingface_hub import hf_hub_download
+            self.pipe.load_lora_weights(hf_hub_download(*QIE_LIGHTNING), adapter_name="lightning")
+            names, weights = ["ours", "lightning"], [1.0, 1.0]
+        self.pipe.set_adapters(names, adapter_weights=weights)
+        self.steps, self.cfg = (4, 1.0) if fast else (steps, cfg)
+        self.name = "qie_lora_fast" if fast else f"qie_lora_s{steps}"
+
+    def __call__(self, images, prompt, seeds, size):
+        out = []
+        for s in seeds:
+            g = self.torch.Generator("cuda").manual_seed(s)
+            out += self.pipe(image=images, prompt=prompt, negative_prompt=NEGATIVE, true_cfg_scale=self.cfg,
+                             width=size[0], height=size[1], num_inference_steps=self.steps, generator=g).images
+        return out
+
+
 def load(name: str, lora: str | None = None, base: bool = False):
     disable_broken_cudnn()
+    if name in ("qie_lora", "qie_lora_slow"):
+        require_free_memory(65)
+        return QieLora(lora, fast=name == "qie_lora")
     if name in ("firered", "firered_fast"):
         require_free_memory(40)
         return FireRed(lightning=name == "firered_fast")
