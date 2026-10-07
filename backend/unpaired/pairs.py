@@ -34,7 +34,7 @@ CROP_LONG_SIDE = 384
 
 # 지시문 형식. struct = 새 형식 문구(v1). natural = 증류 모델이 이미 아는 자연어(학습 없는 outline_dimcrop 과 같은 문장).
 # 2026-10-03 진단: base 에서 struct 로 학습한 LoRA 는 4스텝 증류 모델에서 입력을 그대로 다시 그렸다.
-PROMPT_STYLES = ("struct", "natural", "generic", "dim")
+PROMPT_STYLES = ("struct", "natural", "generic", "dim", "dimfine")
 SOLO_PRODUCT = ("Create a store product photo of {what}: the garment alone, laid flat and neatly smoothed, front view, "
                 "centered on a plain white background. Keep its exact colors, pattern, print and details. "
                 "Show only this one garment: no person, no other clothing, no other objects.")
@@ -68,8 +68,8 @@ DIM_PRODUCT = ("Create a store product photo of {what}: the garment alone, laid 
 
 
 def extract_prompt(category: str, layer: str, style: str = "struct") -> str:
-    if style == "dim":
-        cat = generic(category)
+    if style in ("dim", "dimfine"):  # dimfine: 넓은 이름 대신 세부 종류(trousers, skirt …)로 부른다
+        cat = generic(category) if style == "dim" else category
         if layer.startswith("inner under "):
             what = DIM_WHAT["inner"].format(cat=cat, outer=layer[len("inner under "):])
         else:
